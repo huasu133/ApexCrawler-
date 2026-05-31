@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "apexcrawler"
+version = "0.1.0"
+description = "顶级爬虫框架 — 教育研究用途"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "ApexCrawler Team"}]
+keywords = ["web-scraping", "anti-bot", "fingerprint", "stealth", "research"]
+
+dependencies = [
+    "playwright>=1.48",
+    "curl-cffi>=0.7",
+    "crawl4ai>=0.8",
+    "fonttools[woff]>=4.50",
+    "brotli>=1.1",
+    "ddddocr>=1.5",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "redis[hiredis]>=5.2",
+    "httpx>=0.28",
+    "click>=8.1",
+    "pyyaml>=6.0",
+    "structlog>=24.4",
+    "rich>=13.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "mypy>=1.11",
+    "ruff>=0.6",
+    "pre-commit>=3.8",
+]
+ocr = ["paddleocr>=2.9"]
+ai = ["openai>=1.55", "anthropic>=0.39", "ollama>=0.4"]
+
+[project.scripts]
+apex = "apexcrawler.cli.main:main"
+
+[project.entry-points."apexcrawler.engines"]
+vanilla = "apexcrawler.engines.vanilla:VanillaEngine"
+patched = "apexcrawler.engines.patched:PatchedEngine"
+camoufox = "apexcrawler.engines.camouflaged:CamoufoxEngine"
+cloaked = "apexcrawler.engines.cloaked:CloakedEngine"
+
+[tool.setuptools.packages.find]
+include = ["apexcrawler*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

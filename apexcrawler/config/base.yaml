@@ -1,0 +1,35 @@
+engines:
+  vanilla:
+    type: vanilla
+    headless: true
+    max_concurrent: 3
+  cloaked:
+    type: cloaked
+    headless: true
+    max_concurrent: 1
+    extra_args: ["--disable-blink-features=AutomationControlled"]
+
+proxy:
+  min_pool_size: 10
+  health_check_interval: 60
+
+cache:
+  backend: memory
+  ttl_seconds: 3600
+
+llm:
+  provider: ollama
+  model: "qwen2.5:3b"
+
+pipeline:
+  max_concurrent_tasks: 10
+  retry_max: 3
+  stage_timeouts:
+    schedule: 10
+    route: 30
+    evade: 20
+    extract: 60
+    validate: 10
+    store: 15
+
+log_level: INFO

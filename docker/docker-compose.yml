@@ -1,0 +1,30 @@
+version: "3.8"
+
+services:
+  apexcrawler:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    volumes:
+      - ../config:/app/config:ro
+      - ./data:/app/data
+    environment:
+      - APEX_LOG_LEVEL=INFO
+      - APEX_CACHE__REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: ["apex", "--help"]
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - redis_data:/data
+
+volumes:
+  redis_data:
