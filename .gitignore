@@ -1,7 +1,6 @@
 __pycache__/
 *.pyc
 *.pyo
-.workbuddy/
 .env
 *.egg-info/
 dist/
