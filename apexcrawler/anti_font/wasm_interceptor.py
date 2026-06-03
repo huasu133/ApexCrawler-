@@ -23,7 +23,9 @@ WASM_INTERCEPTION_SCRIPT = """
 (function() {
     'use strict';
 
-    // Check if WASM SIMD is available — if so, block it
+    // Intercept WASM to detect and block SIMD-containing modules.
+    // SIMD detection is limited to the code section (section id=10)
+    // to avoid false positives from 0xFD bytes in data or custom sections.
     if (typeof WebAssembly !== 'undefined') {
         const origInstantiate = WebAssembly.instantiate;
         const origInstantiateStreaming = WebAssembly.instantiateStreaming;
@@ -33,39 +35,50 @@ WASM_INTERCEPTION_SCRIPT = """
         let wasmCount = 0;
         let simdCount = 0;
 
-        // SIMD opcode detection: 0xFD is the SIMD prefix in WASM binary
+        // Detect SIMD opcodes (0xFD prefix) in the WASM code section only.
+        // Scanning the entire binary produces false positives because 0xFD
+        // can appear as data in custom sections, data segments, etc.
         function hasSIMD(buffer) {
             const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer || buffer);
-            for (let i = 0; i < bytes.length; i++) {
-                if (bytes[i] === 0xFD) return true;
+            if (bytes.length < 8) return false;
+
+            // Parse WASM binary: magic (4 bytes) + version (4 bytes) + sections
+            let pos = 8;
+            while (pos + 1 < bytes.length) {
+                const sectionId = bytes[pos++];
+                // Read LEB128 section size
+                let size = 0;
+                let shift = 0;
+                while (pos < bytes.length) {
+                    const byte = bytes[pos++];
+                    size |= (byte & 0x7f) << shift;
+                    if (!(byte & 0x80)) break;
+                    shift += 7;
+                }
+                const sectionEnd = Math.min(pos + size, bytes.length);
+
+                // Only scan code section (id=10) for 0xFD SIMD prefix
+                if (sectionId === 10) {
+                    for (let i = pos; i < sectionEnd; i++) {
+                        if (bytes[i] === 0xFD) return true;
+                    }
+                    return false;
+                }
+                pos = sectionEnd;
             }
             return false;
         }
 
-        // Neutralize SIMD by replacing fd prefix with unreachable
-        function neutralizeSIMD(buffer) {
-            const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer || buffer);
-            const neutralized = new Uint8Array(bytes.length);
-            neutralized.set(bytes);
-            for (let i = 0; i < neutralized.length; i++) {
-                if (neutralized[i] === 0xFD) {
-                    // Replace SIMD prefix with unreachable (0x00) + drop
-                    neutralized[i] = 0x00;
-                }
-            }
-            return neutralized.buffer;
-        }
-
-        // Wrap instantiate
+        // Wrap instantiate — block SIMD modules instead of corrupting them
         WebAssembly.instantiate = function(bufferOrModule, imports) {
             wasmCount++;
-            try {
-                if (hasSIMD(bufferOrModule)) {
-                    simdCount++;
-                    console.debug('[ApexCrawler] WASM SIMD detected and neutralized');
-                    bufferOrModule = neutralizeSIMD(bufferOrModule);
-                }
-            } catch(e) {}
+            if (hasSIMD(bufferOrModule)) {
+                simdCount++;
+                console.warn('[ApexCrawler] WASM SIMD module blocked');
+                return Promise.reject(
+                    new Error('WebAssembly module with SIMD instructions blocked by ApexCrawler')
+                );
+            }
             return origInstantiate.call(this, bufferOrModule, imports);
         };
 
@@ -76,8 +89,10 @@ WASM_INTERCEPTION_SCRIPT = """
                 return response.arrayBuffer().then(function(buffer) {
                     if (hasSIMD(buffer)) {
                         simdCount++;
-                        console.debug('[ApexCrawler] WASM SIMD (streaming) neutralized');
-                        buffer = neutralizeSIMD(buffer);
+                        console.warn('[ApexCrawler] WASM SIMD module (streaming) blocked');
+                        return Promise.reject(
+                            new Error('WebAssembly module with SIMD instructions blocked by ApexCrawler')
+                        );
                     }
                     return origInstantiate.call(WebAssembly, buffer, imports);
                 });
@@ -86,22 +101,28 @@ WASM_INTERCEPTION_SCRIPT = """
 
         // Wrap compile
         WebAssembly.compile = function(buffer) {
-            try {
-                if (hasSIMD(buffer)) {
-                    simdCount++;
-                    buffer = neutralizeSIMD(buffer);
-                }
-            } catch(e) {}
+            wasmCount++;
+            if (hasSIMD(buffer)) {
+                simdCount++;
+                console.warn('[ApexCrawler] WASM SIMD module compile blocked');
+                return Promise.reject(
+                    new Error('WebAssembly module with SIMD instructions blocked by ApexCrawler')
+                );
+            }
             return origCompile.call(this, buffer);
         };
 
         // Wrap compileStreaming
         WebAssembly.compileStreaming = function(source) {
+            wasmCount++;
             return source.then(function(response) {
                 return response.arrayBuffer().then(function(buffer) {
                     if (hasSIMD(buffer)) {
                         simdCount++;
-                        buffer = neutralizeSIMD(buffer);
+                        console.warn('[ApexCrawler] WASM SIMD module (streaming compile) blocked');
+                        return Promise.reject(
+                            new Error('WebAssembly module with SIMD instructions blocked by ApexCrawler')
+                        );
                     }
                     return origCompile.call(WebAssembly, buffer);
                 });

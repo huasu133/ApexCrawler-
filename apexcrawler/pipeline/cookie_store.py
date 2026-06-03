@@ -1,7 +1,7 @@
 from __future__ import annotations
 """Cookie jar persistence — Netscape format + Redis support."""
 
-import os, json, time, logging
+import os, json, time, logging, tempfile
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -16,12 +16,19 @@ class CookieJarStore:
     def save(self, domain: str, cookies: list[dict]) -> str:
         """Save cookies for a domain. Returns file path."""
         filepath = self._dir / f"{domain.replace('.', '_')}.json"
-        with open(filepath, "w") as f:
-            json.dump({
-                "domain": domain,
-                "saved_at": time.time(),
-                "cookies": cookies,
-            }, f, indent=2)
+        # Atomic write: write to temp file then rename
+        fd, tmp_path = tempfile.mkstemp(dir=str(self._dir), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump({
+                    "domain": domain,
+                    "saved_at": time.time(),
+                    "cookies": cookies,
+                }, f, indent=2)
+            os.replace(tmp_path, filepath)
+        except Exception:
+            os.unlink(tmp_path)
+            raise
         logger.debug(f"Cookies saved: {domain} ({len(cookies)} items)")
         return str(filepath)
     

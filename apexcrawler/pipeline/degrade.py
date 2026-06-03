@@ -13,6 +13,13 @@ from ..core.context import PipelineContext
 logger = logging.getLogger(__name__)
 
 
+def _extract_domain(url: str) -> str:
+    """从 URL 中提取域名，处理边界情况。"""
+    if not url or "://" not in url:
+        return ""
+    return url.split("/")[2]
+
+
 @dataclass
 class DegradeState:
     """Current degradation state for a pipeline execution."""
@@ -40,20 +47,27 @@ class DegradeManager:
 
     def record_failure(self, url: str) -> bool:
         """记录一次失败，返回是否应该降级。"""
-        domain = url.split("/")[2]
+        domain = _extract_domain(url)
         self._failures[domain] = self._failures.get(domain, 0) + 1
         return self._should_degrade(domain)
 
     def _should_degrade(self, domain: str) -> bool:
-        """检查域名是否应降级到下层。"""
+        """检查域名是否应降级到下层。根据当前层级选择对应阈值。"""
         f = self._failures.get(domain, 0)
+        state = self._states.get(domain)
+        if state and state.layer == "http":
+            # 当前在 http 层，检查是否需要进一步降级到 browser
+            http_threshold = self._thresholds.get("api", 3)
+            browser_threshold = http_threshold + self._thresholds.get("http", 2)
+            return f >= browser_threshold
+        # 默认检查 api 阈值（包括 api 层或未初始化时）
         return f >= self._thresholds.get("api", 3)
 
     def record_response(
         self, url: str, status: int, body: str = ""
     ) -> DegradeState:
         """记录响应信息并返回当前降级状态。"""
-        domain = url.split("/")[2]
+        domain = _extract_domain(url)
         state = self._states.setdefault(domain, DegradeState())
 
         state.last_status = status
@@ -96,7 +110,7 @@ class DegradeManager:
 
         检查状态码、验证码信号、空响应体以及累计失败次数。
         """
-        status = getattr(ctx, "_last_status", 0)
+        status = ctx._last_status
         html = ctx.raw_html or ""
 
         if status in (403, 429, 503):
@@ -106,14 +120,14 @@ class DegradeManager:
         if len(html) < 200:
             return True
 
-        domain = ctx.target_url.split("/")[2] if ctx.target_url else ""
+        domain = _extract_domain(ctx.target_url) if ctx.target_url else ""
         return self._failures.get(domain, 0) >= 3
 
     def current_layer(self, url: str) -> str:
         """返回当前 URL 对应的降级层级。"""
         if not url:
             return "api"
-        domain = url.split("/")[2]
+        domain = _extract_domain(url)
         state = self._states.get(domain)
         return state.layer if state else "api"
 

@@ -1,5 +1,6 @@
-from __future__ import annotations
 """TLS session ticket cache — saves ~40ms per request by avoiding full handshake."""
+
+from __future__ import annotations
 
 import time
 import logging

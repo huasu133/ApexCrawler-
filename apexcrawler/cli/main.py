@@ -15,11 +15,14 @@ Supports:
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
+import socket
 import sys
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 import click
 
@@ -28,9 +31,53 @@ from ..core.exceptions import ConfigurationError
 
 logger = logging.getLogger(__name__)
 
+# SSRF protection: blocked private/internal IP ranges
+_BLOCKED_NETWORKS = [
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+]
+
+
+def _validate_url(url: str) -> str:
+    """Validate URL for SSRF protection.
+
+    Only allows http/https schemes and blocks requests to internal/private IPs.
+    Returns the validated URL or raises ValueError.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(
+            f"URL scheme '{parsed.scheme}' is not allowed. Only http/https are supported."
+        )
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError(f"Invalid URL: no hostname found in '{url}'")
+
+    # Resolve hostname to IP address
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        # Not a literal IP — resolve via DNS
+        try:
+            resolved = socket.gethostbyname(hostname)
+            ip = ipaddress.ip_address(resolved)
+        except (socket.gaierror, ValueError):
+            raise ValueError(f"Cannot resolve hostname: {hostname}")
+
+    # Block internal/private IP ranges
+    for net in _BLOCKED_NETWORKS:
+        if ip in net:
+            raise ValueError(
+                f"URL targets internal/private network ({net}), blocked for security."
+            )
+    return url
+
 
 @click.group()
-@click.option("--log-level", default="INFO", help="Log level (DEBUG, INFO, WARNING, ERROR)")
+@click.option("--log-level", type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=True), default="INFO", help="Log level (DEBUG, INFO, WARNING, ERROR)")
 @click.option("--json-log", is_flag=True, default=False, help="Output logs as JSON")
 @click.pass_context
 def cli(ctx: click.Context, log_level: str, json_log: bool) -> None:
@@ -51,8 +98,8 @@ def cli(ctx: click.Context, log_level: str, json_log: bool) -> None:
 @click.option("--engine", "-e", "engine_name", default="", help="Force a specific browser engine")
 @click.option("--proxy", "-p", "proxy_url", default="", help="Force a specific proxy")
 @click.option("--geo", "-g", "geo_code", default="", help="Force proxy geo location")
-@click.option("--timeout", "-t", default=30, help="Request timeout in seconds")
-@click.option("--retries", "-r", default=3, help="Max retry attempts")
+@click.option("--timeout", "-t", type=click.IntRange(min=1), default=30, help="Request timeout in seconds")
+@click.option("--retries", "-r", type=click.IntRange(min=1), default=3, help="Max retry attempts")
 @click.pass_context
 def crawl(
     ctx: click.Context,
@@ -481,6 +528,12 @@ async def _try_http_extract(url: str, hints: dict) -> dict | None:
     except ImportError:
         return None
 
+    # SSRF protection: validate URL before making request
+    try:
+        _validate_url(url)
+    except ValueError:
+        return None
+
     try:
         async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
             resp = await client.get(
@@ -592,13 +645,35 @@ def dashboard(ctx: click.Context, port: int, open: bool) -> None:
 
 async def _start_dashboard(port: int, open_browser: bool):
     """Start FastAPI server with simple web dashboard."""
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, HTTPException, Depends
     from fastapi.responses import HTMLResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
     import uvicorn
 
     app = FastAPI(title="ApexCrawler Dashboard", version="0.1.0")
+
+    # CORS middleware — restrict origins in production
+    from fastapi.middleware.cors import CORSMiddleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:*", "http://127.0.0.1:*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # ── API Key authentication ──
+    import os
+    from fastapi import Security
+    from fastapi.security import APIKeyHeader
+
+    _API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
+    _EXPECTED_API_KEY = os.environ.get("APEX_API_KEY", "")
+
+    async def _require_api_key(api_key: str = Security(_API_KEY_HEADER)) -> None:
+        if _EXPECTED_API_KEY and api_key != _EXPECTED_API_KEY:
+            raise HTTPException(status_code=403, detail="Invalid or missing API key")
 
     class AskRequest(BaseModel):
         query: str
@@ -698,7 +773,7 @@ document.getElementById('query').addEventListener('keydown', e => {
         return DASHBOARD_HTML
 
     @app.post("/api/ask")
-    async def api_ask(req: AskRequest):
+    async def api_ask(req: AskRequest, _: None = Depends(_require_api_key)):
         import re, httpx, json as json_mod
         query = req.query
 
@@ -712,6 +787,12 @@ document.getElementById('query').addEventListener('keydown', e => {
                 raise HTTPException(400, "查询中未包含 URL")
 
         url = urls[0]
+
+        # SSRF protection: validate URL before making request
+        try:
+            _validate_url(url)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
 
         # Try template match
         from ..visual.recorder import TemplateStore, ensure_builtin_templates
@@ -750,7 +831,7 @@ document.getElementById('query').addEventListener('keydown', e => {
         })
 
     @app.get("/api/templates")
-    async def api_templates():
+    async def api_templates(_: None = Depends(_require_api_key)):
         from ..visual.recorder import TemplateStore, ensure_builtin_templates
         ensure_builtin_templates()
         store = TemplateStore()
@@ -761,7 +842,7 @@ document.getElementById('query').addEventListener('keydown', e => {
             "engine": t.engine,
         } for t in [store.load(n) for n in store.list_all()] if t]
 
-    config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="warning")
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(config)
 
     if open_browser:

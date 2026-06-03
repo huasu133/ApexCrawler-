@@ -41,7 +41,10 @@ class FontCracker:
             cached = await self._cache.get(cache_key)
             if cached:
                 import pickle
-                return pickle.loads(cached)
+                try:
+                    return pickle.loads(cached)
+                except Exception:
+                    logger.warning(f"Failed to unpickle font cache for {url}, re-decoding")
         
         # Try FontTools first
         try:

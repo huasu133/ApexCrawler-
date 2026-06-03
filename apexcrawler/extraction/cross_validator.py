@@ -1,5 +1,5 @@
-from __future__ import annotations
 """Multi-source cross-validation: JSON-LD + LLM + Microdata voting."""
+from __future__ import annotations
 
 import json
 import logging
@@ -36,24 +36,24 @@ class CrossValidator:
         }
 
     def _from_jsonld(self, html: str, field: str) -> str | None:
-        m = re.search(
+        for m in re.finditer(
             r'script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
             html,
             re.DOTALL,
-        )
-        if m:
+        ):
             try:
                 data = json.loads(m.group(1))
                 if isinstance(data, list):
                     data = data[0]
-                return str(data.get(field)) if field in data else None
+                if field in data:
+                    return str(data.get(field))
             except Exception:
                 pass
         return None
 
     def _from_og(self, html: str, field: str) -> str | None:
         m = re.search(
-            f'<meta[^>]*property="og:{field}"[^>]*content="([^"]*)"', html
+            rf'<meta[^>]*property="og:{field}"[^>]*content="((?:[^"\\]|\\.)*)"', html
         )
         return m.group(1) if m else None
 

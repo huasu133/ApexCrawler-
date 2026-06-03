@@ -151,7 +151,7 @@ class CaptchaSolver:
             return None
 
         logger.info("Requesting image CAPTCHA solution from %s", self._service)
-        return None  # Stub — requires API key
+        raise NotImplementedError("Image CAPTCHA solving not yet implemented")
 
     # ── 2captcha implementation ────────────────────────────
 
@@ -219,8 +219,8 @@ class CaptchaSolver:
         self, site_key: str, page_url: str
     ) -> str | None:
         """Solve hCaptcha via 2captcha API."""
-        # Same flow as reCAPTCHA but method=hcaptcha
-        return None  # Stub — requires API key
+        logger.warning("hCaptcha solving via 2captcha not yet implemented")
+        raise NotImplementedError("hCaptcha solving via 2captcha not yet implemented")
 
     # ── Task-based API implementation (Capsolver, Anti-Captcha) ──
 
@@ -233,4 +233,9 @@ class CaptchaSolver:
         1. POST createTask with RecaptchaV2Task / RecaptchaV3TaskProxyless
         2. Poll getTaskResult until solved
         """
-        return None  # Stub — requires API key
+        logger.warning(
+            "Task-based reCAPTCHA solving via %s not yet implemented", self._service
+        )
+        raise NotImplementedError(
+            f"Task-based reCAPTCHA solving via {self._service} not yet implemented"
+        )

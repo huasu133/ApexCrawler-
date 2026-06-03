@@ -9,6 +9,8 @@ class ParallelZone:
     """Group of stages executed concurrently via asyncio.gather."""
     
     def __init__(self, stages: list, name: str = ""):
+        if not stages:
+            raise ValueError("ParallelZone requires at least one stage")
         self._stages = stages
         self.name = name or f"parallel_{id(self)}"
     

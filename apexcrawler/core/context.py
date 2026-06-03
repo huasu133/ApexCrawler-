@@ -54,6 +54,7 @@ class PipelineContext:
     retry_count: int = 0
     stage_errors: dict[str, list[str]] = field(default_factory=dict)
     fatal_error: str = ""
+    _last_status: int = 0
 
     def duration(self) -> float:
         return time.monotonic() - self.start_time

@@ -92,27 +92,35 @@ class DOMFixer:
     )
 
     def _inject_pseudo_content(self, html: str) -> str:
-        """Extract content from CSS ::before/::after rules and inject as text nodes.
+        """Extract content from CSS ::before/::after rules and inject as hidden text nodes.
 
         Some sites hide important text in pseudo-element content properties.
-        This detects them and appends text markers so extractors can find them.
+        This detects them and injects hidden markers so extractors can find them.
         """
         css_blocks = re.findall(r"<style[^>]*>(.*?)</style>", html, re.DOTALL | re.IGNORECASE)
         if not css_blocks:
             return html
 
-        injections: dict[str, list[str]] = {}  # selector → list of texts
+        pseudo_texts: list[str] = []
         for block in css_blocks:
             for rule in self._PSEUDO_RULE_RE.finditer(block):
-                selector = rule.group(1)  # ::before or ::after
                 body = rule.group(2)
                 content_match = self._CONTENT_PROP_RE.search(body)
                 if content_match:
                     text = content_match.group(1) or content_match.group(2) or ""
-                    if text:
-                        # Look for CSS selector in the same style block or surrounding rules
-                        # For now, add a data attribute marker for AI extractors
-                        pass  # Pseudo-content injection is complex — handled by AI extractors
+                    if text and text not in pseudo_texts:
+                        pseudo_texts.append(text)
+
+        if pseudo_texts:
+            marker = "\n".join(
+                f'<span data-apex-pseudo-content="{text}" style="display:none">{text}</span>'
+                for text in pseudo_texts
+            )
+            body_close = html.rfind("</body>")
+            if body_close != -1:
+                html = html[:body_close] + marker + html[body_close:]
+            else:
+                html += marker
 
         return html
 

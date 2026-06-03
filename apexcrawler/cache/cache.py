@@ -95,7 +95,14 @@ class Cache:
         if ttl is None:
             ttl = self._default_ttl
         if serialize:
-            payload = json.dumps(value, ensure_ascii=False, default=str)
+            try:
+                payload = json.dumps(value, ensure_ascii=False)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Cache value for key '%s' is not JSON-serializable, "
+                    "falling back to str(). Data may be lost.", key
+                )
+                payload = json.dumps(value, ensure_ascii=False, default=str)
         else:
             payload = value if isinstance(value, bytes) else str(value).encode()
         await self._backend.set(self._make_key(key), payload, ttl=ttl)

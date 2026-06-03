@@ -67,11 +67,13 @@ class VanillaEngine(BaseEngine):
             raise EngineError("vanilla", "Engine not launched — call launch() first")
 
         if proxy:
-            context = await self._browser.new_context(
+            if self._context:
+                await self._context.close()
+            self._context = await self._browser.new_context(
                 viewport=self._viewport,
                 proxy={"server": proxy},
             )
-            page = await context.new_page()
+            page = await self._context.new_page()
         else:
             page = await self._context.new_page()
 
@@ -83,13 +85,22 @@ class VanillaEngine(BaseEngine):
         """Close the browser and stop Playwright."""
         self._running = False
         if self._context:
-            await self._context.close()
+            try:
+                await self._context.close()
+            except Exception:
+                pass
             self._context = None
         if self._browser:
-            await self._browser.close()
+            try:
+                await self._browser.close()
+            except Exception:
+                pass
             self._browser = None
         if self._playwright:
-            await self._playwright.stop()
+            try:
+                await self._playwright.stop()
+            except Exception:
+                pass
             self._playwright = None
 
 
@@ -100,9 +111,8 @@ class _PageAdapter:
         self._pw_page = pw_page
         self._owns_ctx = owns_browser_context
 
-    @property
-    def content(self) -> str:
-        return self._pw_page.content() if hasattr(self._pw_page, "content") else ""
+    async def content(self) -> str:
+        return await self._pw_page.content() if hasattr(self._pw_page, "content") else ""
 
     @property
     def url(self) -> str:

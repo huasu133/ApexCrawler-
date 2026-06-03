@@ -40,6 +40,7 @@ class ExtractionError(RetryableError):
     """Data extraction failed but may succeed with different strategy."""
     def __init__(self, field: str = "", detail: str = ""):
         self.field = field
+        self.detail = detail
         super().__init__(f"Extraction failed{f' for {field}' if field else ''}: {detail}")
 
 

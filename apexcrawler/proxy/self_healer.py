@@ -3,6 +3,8 @@
 import logging
 import time
 
+from ..core.exceptions import ProxyError
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,7 +30,7 @@ class ProxySelfHealer:
             return proxy
         # Alert
         self._alert("Proxy pool exhausted!")
-        raise Exception("No available proxy")
+        raise ProxyError("all", "No available proxy")
 
     def report_failure(self, proxy: str):
         self._failures[proxy] = self._failures.get(proxy, 0) + 1

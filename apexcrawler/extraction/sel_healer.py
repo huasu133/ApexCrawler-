@@ -1,5 +1,5 @@
-from __future__ import annotations
 """Self-healing XPath/CSS selectors via semantic matching + LLM fallback."""
+from __future__ import annotations
 
 import hashlib
 import logging

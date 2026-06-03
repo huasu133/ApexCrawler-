@@ -50,7 +50,7 @@ class RouteStage:
         self._matcher = matcher
 
     async def execute(self, ctx: PipelineContext) -> PipelineContext:
-        matcher = self._matcher or _DefaultEngineMatcher()
+        matcher = self._matcher if self._matcher is not None else _DefaultEngineMatcher()
         result = matcher.match(ctx.target_url)
         ctx.selected_engine = result.engine
         ctx.route_reason = result.reason
@@ -84,6 +84,8 @@ class EvadeStage:
     async def execute(self, ctx: PipelineContext) -> PipelineContext:
         # Select TLS profile with rotation
         profile = self._router.rotate()
+        if profile is None:
+            raise ConfigurationError("TLSRouter.rotate() returned no available profile")
         ctx.user_agent = profile.ua
         ctx.tls_profile = profile.name
         ctx.ja4_fingerprint = profile.ja4_prefix

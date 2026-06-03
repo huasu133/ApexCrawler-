@@ -32,9 +32,28 @@ window.navigator.permissions.query = (parameters) => (
     Promise.resolve({state: Notification.permission}) :
     originalQuery(parameters)
 );
-// Fix plugins length
+// Fix plugins — return Plugin-like objects, not numbers
 Object.defineProperty(navigator, 'plugins', {
-    get: () => [1, 2, 3, 4, 5],
+    get: () => {
+        const createPlugin = (name, filename, description) => {
+            const plugin = {
+                name: name,
+                filename: filename,
+                description: description,
+                length: 2,
+            };
+            plugin[0] = {type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format', enabledPlugin: plugin};
+            plugin[1] = {type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format', enabledPlugin: plugin};
+            plugin.item = function(n) { return this[n] || null; };
+            plugin.namedItem = function(name) { return null; };
+            return plugin;
+        };
+        return [
+            createPlugin('Chrome PDF Plugin', 'internal-pdf-viewer', 'Portable Document Format'),
+            createPlugin('Chrome PDF Viewer', 'mhjfbmdgcfjbbpaeojofohoefgiehjai', ''),
+            createPlugin('Native Client', 'internal-nacl-plugin', ''),
+        ];
+    },
 });
 // Fix languages
 Object.defineProperty(navigator, 'languages', {
@@ -111,6 +130,10 @@ class PatchedEngine(BaseEngine):
         if not self._page:
             await self.launch()
         if proxy:
+            if self._page:
+                await self._page.close()
+            if self._context:
+                await self._context.close()
             context_opts = {"proxy": {"server": proxy}}
             self._context = await self._browser.new_context(
                 **context_opts, viewport=self._viewport
@@ -122,13 +145,22 @@ class PatchedEngine(BaseEngine):
         return _PageAdapter(self._page)
 
     async def close(self) -> None:
+        if self._page:
+            await self._page.close()
+            self._page = None
+        if self._context:
+            await self._context.close()
+            self._context = None
         if self._browser:
             await self._browser.close()
+            self._browser = None
         if hasattr(self, '_pw'):
             await self._pw.stop()
 
     async def health_check(self) -> bool:
-        return self._browser is not None and self._browser.is_connected()
+        if self._browser is None:
+            return False
+        return self._browser.is_connected()
 
 
 class _PageAdapter:
@@ -139,9 +171,8 @@ class _PageAdapter:
     def __init__(self, page):
         self._page = page
 
-    @property
-    def content(self) -> str:
-        return self._page.content()
+    async def content(self) -> str:
+        return await self._page.content()
 
     @property
     def url(self) -> str:

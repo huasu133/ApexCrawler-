@@ -97,7 +97,7 @@ class ProxyPool(ProxyProvider):
 
     # ── Pool Management ─────────────────────────────────────
 
-    def add(self, url: str, *, protocol: str = "http", geo: str = "", weight: int = 1) -> None:
+    async def add(self, url: str, *, protocol: str = "http", geo: str = "", weight: int = 1) -> None:
         """Add a proxy to the pool.
 
         Args:
@@ -106,40 +106,43 @@ class ProxyPool(ProxyProvider):
             geo: ISO 3166-1 alpha-2 country code.
             weight: Selection weight (higher = more likely to be selected).
         """
-        if url in self._proxies:
-            logger.debug(f"Proxy already in pool: {url[:50]}...")
-            return
+        async with self._lock:
+            if url in self._proxies:
+                logger.debug(f"Proxy already in pool: {url[:50]}...")
+                return
 
-        self._proxies[url] = ProxyEntry(
-            url=url,
-            protocol=protocol,
-            geo=geo.upper() if geo else "",
-            weight=weight,
-        )
+            self._proxies[url] = ProxyEntry(
+                url=url,
+                protocol=protocol,
+                geo=geo.upper() if geo else "",
+                weight=weight,
+            )
         logger.info(f"Proxy added to pool: {url[:60]}... (geo={geo or 'unknown'})")
 
-    def add_many(self, urls: list[str], *, protocol: str = "http", geo: str = "") -> int:
+    async def add_many(self, urls: list[str], *, protocol: str = "http", geo: str = "") -> int:
         """Add multiple proxies at once.
 
         Returns:
             Number of proxies actually added (excluding duplicates).
         """
         count = 0
-        for url in urls:
-            if url not in self._proxies:
-                self._proxies[url] = ProxyEntry(
-                    url=url,
-                    protocol=protocol,
-                    geo=geo.upper() if geo else "",
-                )
-                count += 1
+        async with self._lock:
+            for url in urls:
+                if url not in self._proxies:
+                    self._proxies[url] = ProxyEntry(
+                        url=url,
+                        protocol=protocol,
+                        geo=geo.upper() if geo else "",
+                    )
+                    count += 1
         logger.info(f"Added {count} new proxies to pool (total: {len(self._proxies)})")
         return count
 
-    def remove(self, url: str) -> bool:
+    async def remove(self, url: str) -> bool:
         """Remove a proxy from the pool permanently."""
-        removed = url in self._proxies
-        self._proxies.pop(url, None)
+        async with self._lock:
+            removed = url in self._proxies
+            self._proxies.pop(url, None)
         if removed:
             logger.warning(f"Proxy removed from pool: {url[:60]}...")
         return removed

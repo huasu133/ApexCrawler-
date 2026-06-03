@@ -75,7 +75,7 @@ class MouseSimulator:
         target_x: float,
         target_y: float,
         steps: int = 30,
-        emulate: bool = False,
+        emulate: bool = True,
     ) -> None:
         """Move the mouse along a Bézier curve to (target_x, target_y).
 
@@ -114,7 +114,7 @@ class MouseSimulator:
         x: float | None = None,
         y: float | None = None,
         button: str = "left",
-        emulate: bool = False,
+        emulate: bool = True,
     ) -> None:
         """Move to a position (or stay) and click."""
         if x is not None and y is not None:
@@ -190,7 +190,7 @@ class KeyboardSimulator:
             return char
         return random.choice(neighbors)
 
-    async def type(self, text: str, emulate: bool = False) -> None:
+    async def type(self, text: str, emulate: bool = True) -> None:
         """Type text with variable delays and occasional typos.
 
         Args:
@@ -242,7 +242,7 @@ class ScrollSimulator:
         direction: str = "down",
         distance: int | None = None,
         duration: float | None = None,
-        emulate: bool = False,
+        emulate: bool = True,
     ) -> None:
         """Scroll with human-like acceleration/deceleration pattern.
 
@@ -285,7 +285,7 @@ class ScrollSimulator:
 
     async def scroll_to_bottom(
         self,
-        emulate: bool = False,
+        emulate: bool = True,
         max_scrolls: int = 10,
     ) -> None:
         """Scroll slowly to the bottom of the page."""
@@ -297,7 +297,7 @@ class ScrollSimulator:
     async def scroll_to_element(
         self,
         selector: str,
-        emulate: bool = False,
+        emulate: bool = True,
     ) -> None:
         """Scroll until a specific element is visible.
 
@@ -334,7 +334,7 @@ class Humanizer:
         homepage: str,
         viewport_width: int = 1920,
         viewport_height: int = 1080,
-        emulate: bool = False,
+        emulate: bool = True,
     ) -> None:
         """Warm-up navigation: visit homepage first, scroll a bit, then proceed."""
 
@@ -369,7 +369,7 @@ class Humanizer:
         duration_s: float = 2.0,
         viewport_w: int = 1920,
         viewport_h: int = 1080,
-        emulate: bool = False,
+        emulate: bool = True,
     ) -> None:
         """Simulate mouse idle micro-jitter during reading pauses.
 
@@ -384,19 +384,17 @@ class Humanizer:
         from .passive_signals import MouseIdlePattern
 
         idle_pattern = MouseIdlePattern()
-        moves = idle_pattern.generate_idle_moves(
-            duration_ms=int(duration_s * 1000),
-            base_x=viewport_w * random.uniform(0.3, 0.5),
-            base_y=viewport_h * random.uniform(0.3, 0.5),
-        )
+        base_x = viewport_w * random.uniform(0.3, 0.5)
+        base_y = viewport_h * random.uniform(0.3, 0.5)
 
-        for dx, dy, delay in moves:
-            if emulate and self.page:
-                try:
-                    await self.page.mouse.move(round(dx), round(dy), steps=1)
-                except Exception:
-                    pass
-            await asyncio.sleep(delay)
+        if emulate and self.page:
+            await idle_pattern.run_idle(
+                self.page, duration_s=duration_s, base_x=base_x, base_y=base_y
+            )
+        else:
+            _ = idle_pattern.generate_idle_moves(
+                duration_s=duration_s,
+            )
 
     async def pause(self, min_seconds: float = 0.5, max_seconds: float = 2.0) -> None:
         """Random pause between actions to simulate thinking time."""

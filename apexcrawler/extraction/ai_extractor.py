@@ -30,6 +30,8 @@ class AIExtractor(Extractor[T]):
     
     async def extract(self, html: str, schema: type[T]) -> T:
         """Extract structured data from HTML using structured data first, LLM fallback."""
+        if not html or not html.strip():
+            raise ExtractionError(detail="Cannot extract from empty HTML")
         html_hash = hashlib.sha256(html.encode()).hexdigest()
 
         # Step 0: content hash cache
@@ -52,9 +54,8 @@ class AIExtractor(Extractor[T]):
                 except Exception:
                     pass
             return result
-        except Exception:
+        except ExtractionError:
             pass
-        
         # Step 2: LLM with smart trim and improved prompt
         trimmed = self._semantic_trim(html)
         prompt = self._build_prompt_v2(trimmed, schema)
@@ -70,40 +71,6 @@ class AIExtractor(Extractor[T]):
             return result
         except Exception as e:
             raise ExtractionError(detail=str(e))
-    
-    def _trim_html(self, html: str) -> str:
-        """Remove nav, footer, script, style elements. Reduce by ~60%."""
-        import re
-        for tag in ["script", "style", "nav", "footer", "noscript", "iframe"]:
-            html = re.sub(f"<{tag}[^>]*>.*?</{tag}>", "", html, flags=re.DOTALL | re.IGNORECASE)
-        return html[:8000] if len(html) > 8000 else html
-    
-    def _build_prompt(self, html: str, schema: type[T]) -> str:
-        fields = schema.model_fields
-        field_desc = "\n".join(f"- {name}: {f.annotation}" for name, f in fields.items())
-        return f"""Extract structured data from this HTML. Return ONLY valid JSON matching this schema:
-
-{field_desc}
-
-HTML:
-{html}
-
-JSON:"""
-    
-    def _extract_without_llm(self, html: str, schema: type[T]) -> T:
-        """Fallback: try JSON-LD, meta tags, schema.org data."""
-        import re, json
-        # Try JSON-LD script tags
-        ld_match = re.search(r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>', html, re.DOTALL)
-        if ld_match:
-            try:
-                data = json.loads(ld_match.group(1))
-                if isinstance(data, list):
-                    data = data[0] if data else {}
-                return schema.model_validate(data)
-            except Exception:
-                pass
-        raise ExtractionError(detail="No LLM available and no structured data found")
 
     def _extract_structured(self, html: str, schema: type[T]) -> T:
         """Try JSON-LD → OpenGraph → Twitter Card in order (zero LLM cost)."""

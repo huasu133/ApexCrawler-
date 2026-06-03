@@ -88,22 +88,35 @@ class CamoufoxEngine(BaseEngine):
         if not self._page:
             await self.launch()
         if proxy:
+            if self._page:
+                await self._page.close()
+            if self._context:
+                await self._context.close()
             context_opts = {"proxy": {"server": proxy}}
             self._context = await self._browser.new_context(
                 **context_opts, viewport=self._viewport
             )
             self._page = await self._context.new_page()
-        await self._page.goto(url, wait_until="networkidle", timeout=30000)
+        await self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
         return _PageAdapter(self._page)
 
     async def close(self) -> None:
+        if self._page:
+            await self._page.close()
+            self._page = None
+        if self._context:
+            await self._context.close()
+            self._context = None
         if self._browser:
             await self._browser.close()
+            self._browser = None
         if hasattr(self, '_pw'):
             await self._pw.stop()
 
     async def health_check(self) -> bool:
-        return self._browser is not None and self._browser.is_connected()
+        if self._browser is None:
+            return False
+        return self._browser.is_connected()
 
 
 class _PageAdapter:
@@ -114,9 +127,8 @@ class _PageAdapter:
     def __init__(self, page):
         self._page = page
 
-    @property
-    def content(self) -> str:
-        return self._page.content()
+    async def content(self) -> str:
+        return await self._page.content()
 
     @property
     def url(self) -> str:

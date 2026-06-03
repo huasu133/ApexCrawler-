@@ -77,10 +77,9 @@ class EnginePool:
         # Acquire both semaphores with timeout to avoid deadlocks
         total_acquired = False
         try:
-            async with asyncio.timeout(30):
-                await self._total_semaphore.acquire()
-                total_acquired = True
-                await engine_sem.acquire()
+            await asyncio.wait_for(self._total_semaphore.acquire(), timeout=30)
+            total_acquired = True
+            await asyncio.wait_for(engine_sem.acquire(), timeout=30)
         except asyncio.TimeoutError:
             if total_acquired:
                 self._total_semaphore.release()
@@ -94,6 +93,9 @@ class EnginePool:
 
             engine_instance = engine_cls(headless=headless, viewport=viewport)
             await engine_instance.launch()
+            if engine_name not in self._instantiated:
+                self._instantiated[engine_name] = []
+            self._instantiated[engine_name].append(engine_instance)
             yield engine_instance
         finally:
             if engine_instance is not None:

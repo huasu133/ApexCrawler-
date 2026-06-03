@@ -31,24 +31,27 @@ class RedisBackend:
         self._key_prefix = key_prefix
         self._client = None
         self._ready = False
+        self._init_lock = asyncio.Lock()
 
     async def _ensure_client(self):
-        if self._client is not None:
-            return
-        try:
-            import redis.asyncio as aioredis
+        async with self._init_lock:
+            if self._client is not None:
+                return
+            try:
+                import redis.asyncio as aioredis
 
-            self._client = aioredis.from_url(
-                self._redis_url,
-                max_connections=self._pool_size,
-                decode_responses=False,
-            )
-            await self._client.ping()
-            self._ready = True
-            logger.info(f"RedisBackend connected to {self._redis_url}")
-        except Exception as e:
-            logger.error(f"RedisBackend connection failed: {e}")
-            raise
+                self._client = aioredis.from_url(
+                    self._redis_url,
+                    max_connections=self._pool_size,
+                    decode_responses=False,
+                )
+                await asyncio.wait_for(self._client.ping(), timeout=5.0)
+                self._ready = True
+                logger.info(f"RedisBackend connected to {self._redis_url}")
+            except Exception as e:
+                self._ready = False
+                logger.error(f"RedisBackend connection failed: {e}")
+                raise
 
     async def get(self, key: str) -> bytes | None:
         """Retrieve a value from Redis."""

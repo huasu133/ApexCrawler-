@@ -6,9 +6,11 @@ YAML file loading via pydantic-settings.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, SecretStr, field_validator
+from pathlib import Path
+from typing import Any, Literal, Optional
+
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import Literal, Optional
 
 
 class EngineConfig(BaseModel):
@@ -72,6 +74,7 @@ class Settings(BaseSettings):
         env_nested_delimiter="__",
         yaml_file="config/base.yaml",
         yaml_file_encoding="utf-8",
+        extra="ignore",
     )
 
     engines: dict[str, EngineConfig] = Field(default_factory=dict)
@@ -79,7 +82,31 @@ class Settings(BaseSettings):
     cache: CacheConfig = Field(default_factory=CacheConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
-    log_level: str = "INFO"
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _load_yaml_fallback(cls, values: Any) -> Any:
+        """Explicitly load YAML config as fallback for pydantic-settings < 2.0
+        that may not support the ``yaml_file`` config key."""
+        if not isinstance(values, dict):
+            return values
+        yaml_path = Path("config/base.yaml")
+        if not yaml_path.exists():
+            return values
+        try:
+            import yaml
+        except ImportError:
+            return values
+        try:
+            yaml_data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return values
+        if isinstance(yaml_data, dict):
+            for k, v in yaml_data.items():
+                if k not in values:
+                    values[k] = v
+        return values
 
     @field_validator("engines")
     @classmethod

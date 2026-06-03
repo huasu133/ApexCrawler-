@@ -13,6 +13,7 @@ Confidence scoring uses a weighted combination of:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import re
@@ -165,7 +166,7 @@ class OCREngine:
             img = Image.open(io.BytesIO(image_bytes))
             img_array = np.array(img)
 
-            results = self._engine.ocr(img_array, cls=True)
+            results = await asyncio.to_thread(self._engine.ocr, img_array, cls=True)
             if not results or not results[0]:
                 return "", 0.0
 

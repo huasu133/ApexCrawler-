@@ -35,7 +35,8 @@ class PipelineExecutor:
         self._configs = configs or {}
         # Merge stage_timeouts from Settings if provided
         if settings:
-            stage_timeouts = getattr(settings.pipeline, "stage_timeouts", {})
+            pipeline_cfg = getattr(settings, 'pipeline', None)
+            stage_timeouts = getattr(pipeline_cfg, 'stage_timeouts', {}) if pipeline_cfg else {}
             for name, timeout in stage_timeouts.items():
                 if name not in self._configs:
                     self._configs[name] = StageConfig(timeout=float(timeout))
@@ -66,6 +67,16 @@ class PipelineExecutor:
         for attempt in range(cfg.retry.max_retries + 1):
             try:
                 return await asyncio.wait_for(stage.execute(ctx), timeout=cfg.timeout)
+            except asyncio.TimeoutError as e:
+                last_exc = RetryableError(f"Stage {stage.name} timed out after {cfg.timeout}s")
+                if attempt < cfg.retry.max_retries:
+                    delay = min(cfg.retry.base_delay * (2 ** attempt), cfg.retry.max_delay)
+                    if cfg.retry.jitter:
+                        delay *= 0.5 + random.random()
+                    logger.warning(
+                        f"Stage {stage.name} retry {attempt+1}/{cfg.retry.max_retries} in {delay:.1f}s"
+                    )
+                    await asyncio.sleep(delay)
             except RetryableError as e:
                 last_exc = e
                 if attempt < cfg.retry.max_retries:
@@ -76,6 +87,10 @@ class PipelineExecutor:
                         f"Stage {stage.name} retry {attempt+1}/{cfg.retry.max_retries} in {delay:.1f}s"
                     )
                     await asyncio.sleep(delay)
+        if last_exc is None:
+            raise RuntimeError(
+                f"Stage {stage.name}: no exception captured but retries exhausted"
+            )
         raise last_exc
 
     async def _rollback(self, stages, ctx):

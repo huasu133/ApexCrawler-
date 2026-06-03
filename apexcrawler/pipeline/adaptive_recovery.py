@@ -42,7 +42,6 @@ class AdaptiveRecoveryManager:
                 return True
         except Exception as e:
             logger.debug(f"Recovery probe [{domain}] failed: {e}")
-            info["probes"] += 1
         return False
     
     def is_degraded(self, domain: str) -> bool:

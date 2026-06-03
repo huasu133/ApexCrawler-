@@ -184,18 +184,23 @@ class MouseIdlePattern:
         self,
         page: Any,
         duration_s: float = 2.0,
+        base_x: float = 0,
+        base_y: float = 0,
     ) -> None:
         """Execute the idle pattern on a Playwright page.
 
-        Moves the mouse in micro-jitter patterns, then returns to
-        approximately the starting position.
+        Moves the mouse in micro-jitter patterns relative to the base
+        position, then returns to approximately the starting position.
         """
+        current_x, current_y = base_x, base_y
         moves = self.generate_idle_moves(duration_s)
         for dx, dy, delay in moves:
+            current_x += dx
+            current_y += dy
             try:
                 await page.mouse.move(
-                    round(dx),
-                    round(dy),
+                    round(current_x),
+                    round(current_y),
                     steps=1,
                 )
             except Exception:
@@ -205,10 +210,12 @@ class MouseIdlePattern:
         # Return to origin with a small counter-move
         total_dx = sum(m[0] for m in moves)
         total_dy = sum(m[1] for m in moves)
+        current_x -= total_dx * 0.7
+        current_y -= total_dy * 0.7
         try:
             await page.mouse.move(
-                round(-total_dx * 0.7),
-                round(-total_dy * 0.7),
+                round(current_x),
+                round(current_y),
                 steps=2,
             )
         except Exception:
