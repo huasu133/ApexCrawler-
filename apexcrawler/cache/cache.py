@@ -26,13 +26,32 @@ class Cache:
 
     def __init__(
         self,
-        backend: CacheBackend,
+        backend: CacheBackend | str = "memory",
         namespace: str = "apexcrawler",
         default_ttl: int = 3600,
+        redis_url: str = "redis://localhost:6379/0",
     ):
+        if isinstance(backend, str):
+            backend = self._build_backend(backend, redis_url)
         self._backend = backend
         self._namespace = namespace
         self._default_ttl = default_ttl
+
+    @staticmethod
+    def _build_backend(backend_name: str, redis_url: str) -> CacheBackend:
+        """Build the appropriate backend from a string identifier."""
+        if backend_name == "redis":
+            from .backends.redis import RedisBackend
+
+            return RedisBackend(redis_url=redis_url)
+        elif backend_name == "memory":
+            from .backends.memory import MemoryBackend
+
+            return MemoryBackend()
+        else:
+            raise ValueError(
+                f"Unknown backend: {backend_name}. Supported: memory, redis"
+            )
 
     def _make_key(self, key: str) -> str:
         """Namespace-prefix the cache key."""
