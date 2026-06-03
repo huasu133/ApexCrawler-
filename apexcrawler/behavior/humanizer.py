@@ -321,11 +321,13 @@ class Humanizer:
         page: object | None = None,
         typo_rate: float = 0.03,
         wpm: tuple[float, float] = (45, 65),
+        session: object | None = None,
     ):
         self.page = page
         self.mouse = MouseSimulator(page)
         self.keyboard = KeyboardSimulator(page, typo_rate=typo_rate, wpm=wpm)
         self.scroll = ScrollSimulator(page)
+        self._session = session  # SessionBehavior for cross-page consistency
 
     async def warm_up(
         self,
@@ -334,27 +336,16 @@ class Humanizer:
         viewport_height: int = 1080,
         emulate: bool = False,
     ) -> None:
-        """Warm-up navigation: visit homepage first, scroll a bit, then proceed.
+        """Warm-up navigation: visit homepage first, scroll a bit, then proceed."""
 
-        This mimics human browsing behavior — most users don't jump directly
-        to a deep-linked page. They start at the homepage, browse around,
-        and then navigate to the target.
-
-        Args:
-            homepage: URL of the homepage to visit first.
-            viewport_width, viewport_height: Viewport dimensions for mouse positioning.
-            emulate: If True, execute actual browser commands.
-        """
         if emulate and self.page:
             try:
-                await self.page.goto(homepage, wait_until="domcontentloaded")  # type: ignore
+                await self.page.goto(homepage, wait_until="domcontentloaded")
             except Exception:
                 pass
 
-        # Simulate a human landing on the page: pause, move mouse
         await asyncio.sleep(random.uniform(1.0, 2.5))
 
-        # Move mouse to center of page (typical warm-up)
         self.mouse.set_position(
             viewport_width * random.uniform(0.3, 0.7),
             viewport_height * random.uniform(0.3, 0.6),
@@ -366,11 +357,46 @@ class Humanizer:
             emulate=emulate,
         )
 
-        # Light scroll to "read" the page
         await self.scroll.scroll("down", distance=random.randint(200, 500), emulate=emulate)
-
-        # Brief pause before navigating away (human reading time)
         await asyncio.sleep(random.uniform(1.5, 4.0))
+
+        # Increment session page count for cross-page behavior
+        if self._session:
+            self._session.increment_page()
+
+    async def idle(
+        self,
+        duration_s: float = 2.0,
+        viewport_w: int = 1920,
+        viewport_h: int = 1080,
+        emulate: bool = False,
+    ) -> None:
+        """Simulate mouse idle micro-jitter during reading pauses.
+
+        Real users don't hold the mouse perfectly still — they make
+        tiny involuntary movements (<5px) every few hundred ms.
+
+        Args:
+            duration_s: How long to simulate idle (seconds).
+            viewport_w, viewport_h: Current viewport dimensions.
+            emulate: If True, execute real mouse moves via Playwright.
+        """
+        from .passive_signals import MouseIdlePattern
+
+        idle_pattern = MouseIdlePattern()
+        moves = idle_pattern.generate_idle_moves(
+            duration_ms=int(duration_s * 1000),
+            base_x=viewport_w * random.uniform(0.3, 0.5),
+            base_y=viewport_h * random.uniform(0.3, 0.5),
+        )
+
+        for dx, dy, delay in moves:
+            if emulate and self.page:
+                try:
+                    await self.page.mouse.move(round(dx), round(dy), steps=1)
+                except Exception:
+                    pass
+            await asyncio.sleep(delay)
 
     async def pause(self, min_seconds: float = 0.5, max_seconds: float = 2.0) -> None:
         """Random pause between actions to simulate thinking time."""

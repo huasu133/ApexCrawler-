@@ -335,3 +335,120 @@ async def monitor_sendbeacon(page: Any) -> dict[str, int]:
         "intercepted": len(beacons_captured),
         "urls": list(set(beacons_captured)),
     }
+
+
+# ════════════════════════════════════════════════════════════════
+#  DNS prefetch noise injection
+# ════════════════════════════════════════════════════════════════
+
+CDN_PREFETCH_TARGETS = [
+    "https://fonts.googleapis.com",
+    "https://fonts.gstatic.com",
+    "https://cdnjs.cloudflare.com",
+    "https://cdn.jsdelivr.net",
+    "https://unpkg.com",
+]
+
+
+async def inject_dns_prefetch(
+    page: Any,
+    count: int = 3,
+    preconnect: bool = True,
+) -> None:
+    """Inject DNS prefetch and preconnect links to mimic Chrome's speculative connections.
+
+    Real Chrome pre-resolves DNS for common CDN domains. Absence of
+    these DNS queries is a weak but detectable signal in aggregate.
+
+    Args:
+        page: Playwright page object.
+        count: Number of CDN targets to inject (max 5).
+        preconnect: Also add preconnect links (triggers TCP+TLS).
+    """
+    targets = random.sample(CDN_PREFETCH_TARGETS, min(count, len(CDN_PREFETCH_TARGETS)))
+
+    try:
+        await page.evaluate(
+            """(targets, preconnect) => {
+                const fragment = document.createDocumentFragment();
+                targets.forEach(url => {
+                    const link = document.createElement('link');
+                    link.rel = 'dns-prefetch';
+                    link.href = url;
+                    fragment.appendChild(link);
+                    if (preconnect) {
+                        const pc = document.createElement('link');
+                        pc.rel = 'preconnect';
+                        pc.href = url;
+                        pc.crossOrigin = 'anonymous';
+                        fragment.appendChild(pc);
+                    }
+                });
+                document.head.appendChild(fragment);
+            }""",
+            (targets, preconnect),
+        )
+    except Exception:
+        logger.debug("DNS prefetch injection skipped (non-critical)")
+
+    # Async background: trigger actual DNS resolution via no-cors fetch
+    async def _warm():
+        await asyncio.sleep(2)
+        try:
+            await page.evaluate(
+                """"(targets) => {
+                    targets.forEach(url => {
+                        fetch(url + '/favicon.ico', {mode: 'no-cors', cache: 'no-store'}).catch(() => {});
+                    });
+                }""",
+                targets[:2],
+            )
+        except Exception:
+            pass
+
+    asyncio.create_task(_warm())
+    logger.debug("DNS prefetch: injected %d targets", len(targets))
+
+
+# ════════════════════════════════════════════════════════════════
+#  Cross-page behavior persistence
+# ════════════════════════════════════════════════════════════════
+
+
+class SessionBehavior:
+    """Persistent behavioral context across pages within a session.
+
+    Real users show consistent patterns across pages:
+    - Typing speed stays stable (wpm ±10%)
+    - Mouse speed decays with fatigue
+    - Scroll habits remain consistent
+    - Attention span decreases on later pages
+    """
+
+    def __init__(self):
+        self.base_wpm: float = random.uniform(40, 80)
+        self.initial_speed: float = random.uniform(800, 1500)
+        self.speed_decay: float = random.uniform(0.05, 0.15)
+        self.scroll_pattern: str = random.choice(["fast", "segmented", "slow"])
+        self.attention_decay: float = random.uniform(0.80, 0.95)
+        self.page_count: int = 0
+
+    def get_wpm(self) -> float:
+        return self.base_wpm * random.uniform(0.95, 1.05)
+
+    def get_mouse_speed(self) -> float:
+        remaining = max(0.3, 1.0 - self.speed_decay * self.page_count)
+        return self.initial_speed * remaining
+
+    def get_scroll_distance(self) -> int:
+        if self.scroll_pattern == "fast":
+            return random.randint(800, 1500)
+        elif self.scroll_pattern == "segmented":
+            return random.randint(300, 600)
+        return random.randint(150, 350)
+
+    def get_dwell_modifier(self) -> float:
+        return self.attention_decay ** self.page_count
+
+    def increment_page(self) -> None:
+        self.page_count += 1
