@@ -1,6 +1,7 @@
 """AI-powered content extraction using Crawl4AI or direct LLM."""
 
 from __future__ import annotations
+import json
 import hashlib
 import logging
 from typing import Any, TypeVar
@@ -14,8 +15,9 @@ T = TypeVar("T", bound=BaseModel)
 class AIExtractor(Extractor[T]):
     """LLM-based semantic content extractor."""
     
-    def __init__(self, llm_client=None, confidence_threshold: float = 0.6):
+    def __init__(self, llm_client=None, cache_backend=None, confidence_threshold: float = 0.6):
         self._llm = llm_client
+        self._cache = cache_backend
         self.confidence_threshold = confidence_threshold
     
     @property
@@ -28,12 +30,28 @@ class AIExtractor(Extractor[T]):
     
     async def extract(self, html: str, schema: type[T]) -> T:
         """Extract structured data from HTML using structured data first, LLM fallback."""
-        # Step 0: content hash dedup
         html_hash = hashlib.sha256(html.encode()).hexdigest()
-        
+
+        # Step 0: content hash cache
+        cache_key = f"extract:{html_hash}:{schema.__name__}"
+        if self._cache:
+            try:
+                cached = await self._cache.get(cache_key)
+                if cached:
+                    data = json.loads(cached)
+                    return schema.model_validate(data)
+            except Exception:
+                pass
+
         # Step 1: structured data first (zero LLM cost)
         try:
-            return self._extract_structured(html, schema)
+            result = self._extract_structured(html, schema)
+            if self._cache:
+                try:
+                    await self._cache.set(cache_key, json.dumps(result.model_dump()).encode(), ttl=3600)
+                except Exception:
+                    pass
+            return result
         except Exception:
             pass
         
@@ -43,7 +61,13 @@ class AIExtractor(Extractor[T]):
         
         try:
             response = await self._llm.generate(prompt, temperature=0)
-            return schema.model_validate_json(response)
+            result = schema.model_validate_json(response)
+            if self._cache:
+                try:
+                    await self._cache.set(cache_key, json.dumps(result.model_dump()).encode(), ttl=3600)
+                except Exception:
+                    pass
+            return result
         except Exception as e:
             raise ExtractionError(detail=str(e))
     
