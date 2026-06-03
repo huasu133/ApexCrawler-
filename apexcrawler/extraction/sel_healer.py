@@ -17,11 +17,23 @@ class SelHealer:
     async def heal(self, url: str, ctx) -> str | None:
         """Attempt to recover content when normal extraction fails.
         
-        Tries alternative selectors and returns recovered content if found.
+        Uses the ctx's existing headers, proxy, and user-agent
+        from the pipeline to maintain anti-detection state.
         """
         try:
             import httpx
-            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as c:
+            headers = {}
+            if hasattr(ctx, 'user_agent') and ctx.user_agent:
+                headers['User-Agent'] = ctx.user_agent
+            headers['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+            headers['Accept-Language'] = 'en-US,en;q=0.9'
+
+            proxy = getattr(ctx, 'proxy', None)
+
+            async with httpx.AsyncClient(
+                timeout=10, follow_redirects=True,
+                proxy=proxy, headers=headers,
+            ) as c:
                 r = await c.get(url)
                 r.raise_for_status()
                 return r.text
