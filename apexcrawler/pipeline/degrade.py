@@ -105,6 +105,31 @@ class DegradeManager:
         )
         return state
 
+    def should_degrade(self, ctx: PipelineContext) -> bool:
+        """Check if the pipeline should degrade to a fallback engine."""
+        if not ctx.target_url:
+            return False
+        domain = _extract_domain(ctx.target_url)
+        state = self._states.get(domain)
+        if not state:
+            return False
+        failures = self._failures.get(domain, 0)
+        return failures >= self._thresholds.get("api", 3)
+
+    def degrade(self, current_engine: str) -> str:
+        """Degrade engine to next fallback level.
+
+        API → HTTP → Browser chain.
+        """
+        _DEGRADE_CHAIN = {
+            "": "httpx",
+            "api": "httpx",
+            "httpx": "playwright",
+            "playwright": "camoufox",
+            "camoufox": "cloaked",
+        }
+        return _DEGRADE_CHAIN.get(current_engine, "cloaked")
+
     def should_use_browser(self, ctx: PipelineContext) -> bool:
         """判断是否需要使用浏览器引擎。
 
@@ -117,7 +142,7 @@ class DegradeManager:
             return True
         if "captcha" in html.lower() or "cf-challenge" in html.lower():
             return True
-        if len(html) < 200:
+        if html and len(html) < 200:
             return True
 
         domain = _extract_domain(ctx.target_url) if ctx.target_url else ""

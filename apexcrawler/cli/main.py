@@ -153,27 +153,80 @@ def crawl(
 
     async def _run():
         results = []
+        from ..core.context import PipelineContext
         from ..extraction.schema import get_schema
+        from ..pipeline.stages import (
+            ScheduleStage, RouteStage, EvadeStage,
+            ExtractStage, ValidateStage, StoreStage,
+        )
+        from ..pipeline.core import PipelineExecutor, StageConfig
+        from ..behavior.timing import TimingScheduler
+        from ..pipeline.session_manager import SessionManager
+        from ..pipeline.rate_controller import RateController
+        from ..http.connection_pool import ConnectionReuseManager
+        from ..http.tls_router import TLSRouter
+
         schema = get_schema(schema_name)
+
+        # Build shared services
+        session_mgr = SessionManager()
+        rate_ctrl = RateController()
+        tls_router = TLSRouter()
 
         for idx, target_url in enumerate(urls, 1):
             click.echo(f"\n[{idx}/{len(urls)}] Crawling: {target_url}")
             try:
-                # TODO: Integrate full pipeline (Schedule → Route → Evade → Extract → Validate → Store)
-                # For now, just demonstrate the component is wired up
-                from ..core.context import PipelineContext
+                _validate_url(target_url)
 
                 ctx_obj = PipelineContext(
                     target_url=target_url,
                     extraction_schema=schema,
                 )
-                click.echo(f"  Trace ID: {ctx_obj.trace_id}")
-                click.echo(f"  Status: {ctx_obj.duration():.2f}s (pipeline integration pending)")
+
+                # Override engine if specified
+                if engine_name:
+                    ctx_obj.selected_engine = engine_name
+
+                # Build pipeline stages
+                timing = TimingScheduler(rate_controller=rate_ctrl)
+                stages = [
+                    ScheduleStage(timing=timing),
+                    RouteStage(),
+                    EvadeStage(router=tls_router, proxies=[proxy_url] if proxy_url else []),
+                    ExtractStage(
+                        engine_factory=None,
+                        conn_manager=None,
+                    ),
+                    ValidateStage(),
+                    StoreStage(),
+                ]
+                configs = {
+                    "extract": StageConfig(timeout=timeout),
+                    "schedule": StageConfig(timeout=10),
+                }
+                executor = PipelineExecutor(stages, configs, settings=settings)
+                ok, result = await executor.run(ctx_obj)
+
+                duration = result.duration()
+                status = "success" if ok else "failed"
+                click.echo(
+                    f"  [{status.upper()}] trace={result.trace_id} "
+                    f"engine={result.selected_engine} "
+                    f"html={len(result.raw_html or '')}B "
+                    f"duration={duration:.2f}s "
+                    f"valid={result.validation_passed}"
+                )
 
                 results.append({
                     "url": target_url,
-                    "trace_id": ctx_obj.trace_id,
-                    "status": "pending_integration",
+                    "trace_id": result.trace_id,
+                    "status": status,
+                    "engine": result.selected_engine,
+                    "html_bytes": len(result.raw_html or ""),
+                    "duration_s": round(duration, 2),
+                    "valid": result.validation_passed,
+                    "stored_id": result.stored_id,
+                    "errors": result.validation_errors,
                 })
 
             except Exception as e:

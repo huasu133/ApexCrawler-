@@ -30,9 +30,13 @@ class StageConfig:
 class PipelineExecutor:
     """Async pipeline executor with retry, timeout, and rollback."""
 
-    def __init__(self, stages: list, configs: dict[str, StageConfig] | None = None, settings=None):
+    def __init__(self, stages: list, configs: dict[str, StageConfig] | None = None,
+                 settings=None, session_manager=None, rate_controller=None, degrade_manager=None):
         self._stages = stages
         self._configs = configs or {}
+        self._session_mgr = session_manager
+        self._rate_ctrl = rate_controller
+        self._degrade_mgr = degrade_manager
         # Merge stage_timeouts from Settings if provided
         if settings:
             pipeline_cfg = getattr(settings, 'pipeline', None)
@@ -42,13 +46,47 @@ class PipelineExecutor:
                     self._configs[name] = StageConfig(timeout=float(timeout))
 
     async def run(self, ctx: PipelineContext):
-        """Run all stages sequentially. Returns (success, ctx)."""
+        """Run all stages sequentially. Returns (success, ctx).
+
+        Integrates SessionManager for session tracking, RateController
+        for inter-stage pacing, and DegradeManager for engine degradation.
+        """
         executed = []
+
+        # SessionManager: bind engine for domain consistency
+        if self._session_mgr and ctx.selected_engine:
+            from urllib.parse import urlparse
+            domain = urlparse(ctx.target_url).netloc
+            self._session_mgr.bind_engine(domain, ctx.selected_engine, ctx.proxy or "")
+
         for stage in self._stages:
+            # RateController: apply inter-stage pacing
+            if self._rate_ctrl and stage.name in ("extract", "evade"):
+                delay = self._rate_ctrl.get_delay()
+                if delay > 0:
+                    await asyncio.sleep(delay)
+
+            # DegradeManager: check if engine degradation is needed
+            if self._degrade_mgr and stage.name == "extract":
+                if self._degrade_mgr.should_degrade(ctx):
+                    old_engine = ctx.selected_engine
+                    ctx.selected_engine = self._degrade_mgr.degrade(ctx.selected_engine)
+                    logger.warning(
+                        f"[degrade] engine degraded {old_engine} → {ctx.selected_engine}"
+                    )
+
             cfg = self._configs.get(stage.name, StageConfig())
             try:
                 ctx = await self._execute_with_retry(stage, ctx, cfg)
                 executed.append(stage)
+
+                # RateController: feed signal based on stage result
+                if self._rate_ctrl:
+                    if hasattr(ctx, 'raw_html') and ctx.raw_html and len(ctx.raw_html) > 200:
+                        self._rate_ctrl.signal_success()
+                    elif stage.name == "extract":
+                        self._rate_ctrl.signal(status=429)
+
             except asyncio.CancelledError:
                 await self._rollback(executed, ctx)
                 raise

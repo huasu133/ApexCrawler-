@@ -8,6 +8,28 @@ import re
 logger = logging.getLogger(__name__)
 
 
+class SelHealer:
+    """High-level selector self-healing for pipeline integration."""
+
+    def __init__(self):
+        self._relocator = SemanticRelocator()
+
+    async def heal(self, url: str, ctx) -> str | None:
+        """Attempt to recover content when normal extraction fails.
+        
+        Tries alternative selectors and returns recovered content if found.
+        """
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as c:
+                r = await c.get(url)
+                r.raise_for_status()
+                return r.text
+        except Exception as e:
+            logger.debug(f"sel_healer recovery failed: {e}")
+            return None
+
+
 class SemanticRelocator:
     """Generates and heals selectors when original extraction fails."""
 

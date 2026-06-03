@@ -301,3 +301,28 @@ def clean_record(data: dict[str, Any]) -> dict[str, Any]:
             cleaned[key] = clean_text(value) if len(value) > 2 else value
 
     return cleaned
+
+
+class Cleaner:
+    """Pipeline-compatible data cleaner for post-extraction normalization."""
+
+    def clean(self, html: str) -> str:
+        """Clean and normalize extracted HTML content.
+
+        Removes excess whitespace, scripts, comments, and normalizes text.
+        """
+        if not html:
+            return html
+        # Remove HTML comments
+        html = re.sub(r"<!--.*?-->", "", html, flags=re.DOTALL)
+        # Remove script/style tags
+        for tag in ("script", "style", "noscript"):
+            html = re.sub(
+                f"<{tag}[^>]*>.*?</{tag}>",
+                "",
+                html,
+                flags=re.DOTALL | re.IGNORECASE,
+            )
+        # Normalize whitespace
+        html = re.sub(r"\s+", " ", html)
+        return html.strip()

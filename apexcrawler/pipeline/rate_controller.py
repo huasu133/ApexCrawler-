@@ -94,6 +94,21 @@ class RateController:
 
         self._recovery_counter = 0
 
+    def signal_success(self):
+        """Record a successful request for recovery tracking."""
+        self._recovery_counter = min(self._recovery_counter + 10, 100)
+        self._maybe_recover()
+
+    def get_delay(self) -> float:
+        """Get the wait time before next request based on current rate."""
+        interval = 1.0 / self.current_rate if self.current_rate > 0 else 20
+        elapsed = time.monotonic() - self._last_request
+        self._last_request = time.monotonic()
+        if elapsed < interval:
+            return max(0, interval - elapsed)
+        self._maybe_recover()
+        return 0.0
+
     def _upgrade(self):
         """提升一级速率限制。"""
         self._level = min(self._level + 1, len(self.LEVELS) - 1)

@@ -191,13 +191,19 @@ class ExtractStage:
 
     def __init__(self, engine_factory=None, validator: "CrossValidator | None" = None,
                  mobile_sniffer: "MobileAPISniffer | None" = None,
-                 conn_manager: "ConnectionReuseManager | None" = None):
+                 conn_manager: "ConnectionReuseManager | None" = None,
+                 sel_healer: "SelHealer | None" = None,
+                 cleaner: "Cleaner | None" = None):
         self._engine_factory = engine_factory
         from ..extraction.cross_validator import CrossValidator as CV
         from ..routing.mobile_sniffer import MobileAPISniffer as MS
         self._validator = validator or CV()
         self._mobile_sniffer = mobile_sniffer or MS()
         self._conn_manager = conn_manager
+        from ..extraction.sel_healer import SelHealer as SH
+        from ..extraction.cleaner import Cleaner as CL
+        self._sel_healer = sel_healer or SH()
+        self._cleaner = cleaner or CL()
 
     async def execute(self, ctx: PipelineContext) -> PipelineContext:
         if not ctx.target_url:
@@ -213,6 +219,12 @@ class ExtractStage:
         html = await self._try_http(ctx)
         if html and len(html) > 200:
             ctx.raw_html = html
+            # Apply Cleaner post-extraction
+            try:
+                ctx.raw_html = self._cleaner.clean(html)
+                logger.debug(f"[extract] cleaner applied, {len(ctx.raw_html)} bytes")
+            except Exception:
+                pass
             # Use higher confidence for API/JSON responses
             if self._api_detected:
                 ctx.extraction_confidence = 0.8
@@ -223,9 +235,20 @@ class ExtractStage:
         # Step 2: Fall back to browser
         html = await self._try_browser(ctx)
         if html:
-            ctx.raw_html = html
+            ctx.raw_html = self._cleaner.clean(html) if html else ""
             ctx.extraction_confidence = 0.5
             return ctx
+
+        # Step 3: SelHealer — try self-healing if extraction failed
+        try:
+            healed = await self._sel_healer.heal(ctx.target_url, ctx)
+            if healed:
+                ctx.raw_html = healed
+                ctx.extraction_confidence = 0.4
+                logger.info(f"[extract] sel_healer recovered content")
+                return ctx
+        except Exception as e:
+            logger.debug(f"[extract] sel_healer failed: {e}")
 
         raise ExtractionError(detail=f"Failed to fetch {ctx.target_url}")
 
@@ -270,6 +293,15 @@ class ExtractStage:
                 r = await c.get(target_url)
                 r.raise_for_status()
                 html = r.text
+
+            # Brotli decompression support
+            if html and len(html) < 100:
+                from ..utils.brotli_support import decompress_brotli
+                raw = r.content
+                decompressed = decompress_brotli(raw)
+                if decompressed:
+                    html = decompressed.decode("utf-8", errors="replace")
+                    logger.debug(f"[extract] brotli decompressed {len(raw)} → {len(html)} bytes")
 
             # If we got JSON from a mobile API, use it directly — skip browser fallback
             if is_api:
@@ -385,6 +417,62 @@ class StoreStage:
 
     async def rollback(self, ctx: PipelineContext) -> None:
         ctx.stored_id = ""
+
+
+# ── Internal helpers ──────────────────────────────────────────────
+
+
+class FontDecodeStage:
+    """Decodes font-encoded text using FontCracker + OCREngine + DomFixer.
+
+    Runs after extraction to decode any font-obfuscated content (e.g. 58同城, 猫扑).
+    Falls back through FontTools → OCR → shape matching.
+    """
+
+    name = "font_decode"
+
+    def __init__(self, font_cracker=None, ocr_engine=None, dom_fixer=None):
+        from ..anti_font.font_cracker import FontCracker as FC
+        from ..anti_font.ocr_engine import OCREngine
+        from ..anti_font.dom_fixer import DomFixer
+        self._cracker = font_cracker or FC()
+        self._ocr = ocr_engine or OCREngine()
+        self._fixer = dom_fixer or DomFixer()
+
+    async def execute(self, ctx: PipelineContext) -> PipelineContext:
+        if not ctx.raw_html or "@font-face" not in ctx.raw_html:
+            logger.debug(f"[font_decode] no encoded fonts detected, skipping")
+            return ctx
+
+        try:
+            # Step 1: Fix DOM CSS position offsets
+            fixed_html = self._fixer.fix(ctx.raw_html)
+            ctx.raw_html = fixed_html
+            logger.info(f"[font_decode] DOMFixer applied")
+
+            # Step 2: Try FontTools glyph mapping
+            decoded = await self._cracker.decode(ctx.raw_html)
+            if decoded and decoded != ctx.raw_html:
+                ctx.raw_html = decoded
+                ctx.extraction_confidence = max(ctx.extraction_confidence or 0, 0.85)
+                logger.info(f"[font_decode] FontTools decoded successfully")
+                return ctx
+
+            # Step 3: OCR fallback for dynamic glyphs
+            ocr_result = await self._ocr.decode(ctx.raw_html)
+            if ocr_result and ocr_result.confidence > 0.7:
+                ctx.raw_html = ocr_result.text
+                ctx.extraction_confidence = max(ctx.extraction_confidence or 0, ocr_result.confidence)
+                logger.info(
+                    f"[font_decode] OCR decoded (confidence={ocr_result.confidence:.2f})"
+                )
+        except Exception as e:
+            logger.warning(f"[font_decode] failed: {e}")
+
+        return ctx
+
+    async def rollback(self, ctx: PipelineContext) -> None:
+        pass
 
 
 # ── Internal helpers ──────────────────────────────────────────────
