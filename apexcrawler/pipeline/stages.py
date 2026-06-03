@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from ..core.context import PipelineContext
 from ..core.exceptions import (
     ConfigurationError,
+    ExtractionError,
     NonRetryableError,
     NotSupportedError,
 )
@@ -112,33 +113,67 @@ class EvadeStage:
 
 
 class ExtractStage:
-    """Navigates to the target URL and extracts content using the selected engine."""
+    """Navigates to target URL and extracts content.
+
+    Two modes:
+    1. HTTP mode (fast): httpx direct request
+    2. Browser mode (full): Playwright/CloakBrowser via engine pool
+    """
 
     name = "extract"
 
-    def __init__(self, engine_factory: object | None = None):
+    def __init__(self, engine_factory=None):
         self._engine_factory = engine_factory
 
     async def execute(self, ctx: PipelineContext) -> PipelineContext:
-        if not ctx.selected_engine:
-            raise ConfigurationError("No engine selected — RouteStage must run first")
-
         if not ctx.target_url:
             raise ConfigurationError("No target URL")
 
-        # In a real implementation, this would use the engine to navigate
-        # For now, simulate the extraction workflow
         logger.info(
-            f"[extract] trace={ctx.trace_id} engine={ctx.selected_engine} "
+            f"[extract] trace={ctx.trace_id} engine={ctx.selected_engine or 'http'} "
             f"url={ctx.target_url}"
         )
 
-        # Placeholder: in production, the engine handles navigation + extraction
-        raw_html = f"<!-- extracted from {ctx.target_url} via {ctx.selected_engine} -->"
-        ctx.raw_html = raw_html
-        ctx.extraction_confidence = 0.0
+        # Step 1: Try lightweight HTTP
+        html = await self._try_http(ctx)
+        if html and len(html) > 200:
+            ctx.raw_html = html
+            ctx.extraction_confidence = 0.7
+            return ctx
 
-        return ctx
+        # Step 2: Fall back to browser
+        html = await self._try_browser(ctx)
+        if html:
+            ctx.raw_html = html
+            ctx.extraction_confidence = 0.5
+            return ctx
+
+        raise ExtractionError(detail=f"Failed to fetch {ctx.target_url}")
+
+    async def _try_http(self, ctx: PipelineContext) -> str | None:
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=15, follow_redirects=True,
+                headers={"User-Agent": ctx.user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"}) as c:
+                r = await c.get(ctx.target_url)
+                r.raise_for_status()
+                return r.text
+        except Exception as e:
+            logger.warning(f"[extract] HTTP failed: {e}")
+            return None
+
+    async def _try_browser(self, ctx: PipelineContext) -> str | None:
+        if not self._engine_factory or not ctx.selected_engine:
+            return None
+        try:
+            async with self._engine_factory.acquire(ctx.selected_engine) as engine:
+                page = await engine.navigate(ctx.target_url, proxy=ctx.proxy or None)
+                html = page.content
+                await page.close()
+                return html
+        except Exception as e:
+            logger.warning(f"[extract] Browser failed: {e}")
+            return None
 
     async def rollback(self, ctx: PipelineContext) -> None:
         ctx.raw_html = ""
