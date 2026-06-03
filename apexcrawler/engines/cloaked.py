@@ -85,7 +85,13 @@ class CloakedEngine(BaseEngine):
         self._browser = await self._pw.chromium.launch(**launch_args)
         self._context = await self._browser.new_context(viewport=self._viewport)
         self._page = await self._context.new_page()
-        logger.info("CloakedEngine launched successfully")
+
+        # Inject WASM interceptor for SIMD neutralization
+        from ..anti_font.wasm_interceptor import WASMInterceptor
+        self._wasm_interceptor = WASMInterceptor()
+        await self._wasm_interceptor.inject(self._page)
+
+        logger.info("CloakedEngine launched successfully (WASM interceptor active)")
 
     async def navigate(self, url: str, proxy: str | None = None):
         if not self._page:
