@@ -55,12 +55,13 @@ class FontRecoveryManager:
             return mapping
 
     async def _decode_with_ddddocr(self, url: str) -> dict:
-        import ddddocr
+        from .font_cracker import FontCracker
 
-        ocr = ddddocr.DdddOcr(show_ad=False)
-        # Render font glyphs → OCR each → build mapping
-        return {}  # Stub: requires glyph rendering
+        fc = FontCracker()
+        return await fc._decode_with_ocr(url)
 
     async def _decode_with_paddleocr(self, url: str) -> dict:
-        # Stub for PaddleOCR integration
-        return {}
+        from .font_cracker import FontCracker
+
+        fc = FontCracker()
+        return await fc._decode_with_ocr(url)

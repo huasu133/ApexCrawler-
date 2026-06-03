@@ -84,13 +84,53 @@ class FontCracker:
         return mapping
     
     async def _decode_with_ocr(self, url: str) -> dict[str, str]:
-        """OCR-based fallback for AI-generated dynamic glyphs."""
-        logger.info(f"Using OCR for font: {url}")
+        """OCR-based fallback: render glyphs → OCR → build char mapping."""
         try:
-            import ddddocr
-            ocr = ddddocr.DdddOcr(show_ad=False)
+            import httpx
+            from fontTools.ttLib import TTFont
+            from PIL import Image, ImageDraw, ImageFont
+
+            # Download font
+            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as c:
+                r = await c.get(url)
+                r.raise_for_status()
+                font_data = io.BytesIO(r.content)
+
+            font = TTFont(font_data)
+            cmap = font.getBestCmap() or {}
+            glyph_map: dict[str, str] = {}
+
+            # Render each glyph and OCR it
+            from .ocr_engine import OCREngine
+            ocr = OCREngine(backend="paddleocr")
+
+            font_size = 48
+            font_data.seek(0)  # reset after TTFont read
+            pil_font = ImageFont.truetype(font_data, font_size)
+
+            for codepoint, glyph_name in list(cmap.items())[:500]:  # limit to 500 chars
+                try:
+                    char = chr(codepoint)
+                    img = Image.new('L', (64, 64), 255)
+                    draw = ImageDraw.Draw(img)
+                    draw.text((8, 8), char, font=pil_font, fill=0)
+
+                    img_bytes = io.BytesIO()
+                    img.save(img_bytes, format='PNG')
+
+                    result = await ocr.recognize(img_bytes.getvalue())
+                    if result and result.confidence > 0.6:
+                        glyph_map[char] = result.text.strip()
+                except Exception:
+                    continue
+
+            font.close()
+            if glyph_map:
+                logger.info(f"OCR decoded {len(glyph_map)} glyphs from {url}")
+            return glyph_map
         except ImportError:
-            logger.error("ddddocr not installed")
+            logger.warning("PIL/fontTools not available for OCR fallback")
             return {}
-        # OCR requires rendered glyph images — placeholder
-        return {}
+        except Exception as e:
+            logger.warning(f"OCR decoding failed: {e}")
+            return {}
