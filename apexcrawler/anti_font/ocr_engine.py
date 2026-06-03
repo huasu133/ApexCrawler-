@@ -62,11 +62,11 @@ class OCREngine:
         "day", "most", "us",
     })
 
-    def __init__(self, backend: str = "ddddocr", config: dict[str, Any] | None = None):
+    def __init__(self, backend: str = "paddleocr", config: dict[str, Any] | None = None):
         """Initialize OCR engine.
 
         Args:
-            backend: One of "ddddocr", "paddleocr", "tesseract".
+            backend: "paddleocr" (recommended, 95%+ Chinese), "ddddocr" (captcha), "tesseract" (legacy).
             config: Backend-specific configuration dict.
         """
         self._backend_name = backend

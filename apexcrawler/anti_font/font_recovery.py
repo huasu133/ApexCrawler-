@@ -11,7 +11,7 @@ class FontRecoveryManager:
     STRATEGIES = ["fonttools", "ddddocr", "paddleocr", "contour_match"]
 
     def __init__(self):
-        self._fallback_order = ["fonttools", "ddddocr", "paddleocr"]
+        self._fallback_order = ["fonttools", "paddleocr", "ddddocr"]
 
     async def decode(self, font_url: str, html: str) -> dict[str, str]:
         """Try each strategy in order until one succeeds."""
