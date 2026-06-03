@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Cookie jar persistence — Netscape format + Redis support."""
 
 import os, json, time, logging

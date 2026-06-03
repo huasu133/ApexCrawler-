@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Async pipeline executor with retry, timeout, and rollback."""
 
 import asyncio

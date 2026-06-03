@@ -1,5 +1,7 @@
 """TLS fingerprint router with JA4 profile management."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 

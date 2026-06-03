@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Multi-source cross-validation: JSON-LD + LLM + Microdata voting."""
 
 import json
