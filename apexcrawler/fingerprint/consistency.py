@@ -67,35 +67,63 @@ class DeviceProfile:
 (function() {{
 'use strict';
 
+// ── Layer 0: webdriver flag (most critical bot detection) ──
+Object.defineProperty(Navigator.prototype, 'webdriver', {{
+    get: () => undefined,
+    configurable: false,
+}});
+
+// ── Layer 0.5: window.chrome (headless detection) ──
+if (!window.chrome) {{
+    window.chrome = {{
+        runtime: {{}},
+        loadTimes: function() {{}},
+        csi: function() {{}},
+        app: {{}}
+    }};
+}}
+
 // ── Layer 1: JS navigator ──
 Object.defineProperty(navigator, 'userAgent', {{
     get: () => '{self.user_agent}',
-    configurable: true,
+    configurable: false,
 }});
 Object.defineProperty(navigator, 'platform', {{
     get: () => '{self.platform}',
-    configurable: true,
+    configurable: false,
 }});
 Object.defineProperty(navigator, 'hardwareConcurrency', {{
     get: () => {self.hardware_concurrency},
-    configurable: true,
+    configurable: false,
 }});
 Object.defineProperty(navigator, 'deviceMemory', {{
     get: () => {self.device_memory},
-    configurable: true,
+    configurable: false,
 }});
 Object.defineProperty(navigator, 'vendor', {{
     get: () => '{self.vendor}',
-    configurable: true,
+    configurable: false,
 }});
 Object.defineProperty(navigator, 'language', {{
     get: () => '{self.language}',
-    configurable: true,
+    configurable: false,
+}});
+
+// ── Layer 1.5: plugins / mimeTypes (93% fingerprint libs check this) ──
+Object.defineProperty(navigator, 'plugins', {{
+    get: () => {{
+        const arr = [1, 2, 3, 4, 5];
+        arr.item = (i) => arr[i];
+        arr.namedItem = () => arr[0];
+        arr.refresh = () => {{}};
+        return arr;
+    }},
+    configurable: false,
 }});
 
 // ── Layer 2: Screen ──
-Object.defineProperty(screen, 'width', {{ get: () => {self.screen_w}, configurable: true }});
-Object.defineProperty(screen, 'height', {{ get: () => {self.screen_h}, configurable: true }});
+Object.defineProperty(screen, 'width', {{ get: () => {self.screen_w}, configurable: false }});
+Object.defineProperty(screen, 'height', {{ get: () => {self.screen_h}, configurable: false }});
 
 // ── Layer 3: WebGL renderer/vendor ──
 const origGetParameter = WebGLRenderingContext.prototype.getParameter;
