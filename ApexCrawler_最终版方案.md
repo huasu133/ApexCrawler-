@@ -492,7 +492,7 @@ apex visual https://shop.com/products
 
 ---
 
-## 十二、CI/CD 与部署
+## 十二、快速上手
 
 ### 安装
 
@@ -500,19 +500,53 @@ apex visual https://shop.com/products
 cd /Users/songmoxin/WorkBuddy/2026-05-21-task-1
 pip install -e ".[dev,ocr,ai]"
 playwright install chromium
+pip install cloakbrowser  # 反检测核心
 ```
 
-### CLI
+### 三种使用方式
+
+**① 自然语言（零基础）**
+```bash
+apex ask "提取 amazon.com iPhone 15 价格和评分"
+# 自动：识别URL → 匹配模板 → 检测字段 → 选引擎 → 出数据
+```
+
+**② 可视化点选（精确控制）**
+```bash
+apex visual https://shop.com/products
+# 浏览器打开 → 右侧面板 → 点页面元素 → 输入字段名 → 自动生成Schema
+```
+
+**③ Python 代码（开发者）**
+```python
+from apexcrawler.pipeline.stages import *
+from apexcrawler.pipeline.core import PipelineExecutor, StageConfig
+
+async def scrape():
+    ctx = PipelineContext(target_url="https://example.com")
+    executor = PipelineExecutor([
+        ScheduleStage(), RouteStage(), EvadeStage(),
+        ExtractStage(), ValidateStage(), StoreStage()
+    ], {"extract": StageConfig(timeout=30)})
+    ok, result = await executor.run(ctx)
+    print(f"{len(result.raw_html)} bytes from {result.selected_engine}")
+```
+
+### Web 面板
 
 ```bash
-apex ask "提取 XX 网站的 YY"      # 自然语言爬取
-apex visual <url>                 # 可视化点选
-apex template list                # 查看模板
-apex template use "Amazon" <url>  # 用模板爬取
-apex dashboard                    # 启动 Web 面板
-apex crawl <url> -e cloaked       # 高级模式
-apex config validate              # 校验配置
+apex dashboard     # → http://localhost:8000
+# 不懂代码的人在浏览器里输入 "提取 XX 网站的 YY" 就行
 ```
+
+### 引擎选择
+
+| 命令 | 适用场景 |
+|------|---------|
+| `apex crawl <url>` | 普通站，自动路由 |
+| `apex crawl <url> -e cloaked` | Cloudflare/Akamai 高防站 |
+| `apex crawl <url> -e camoufox` | Google/社交网站 |
+| `apex crawl <url> -e vanilla` | 静态站，最快 |
 
 ### Docker
 
@@ -531,6 +565,10 @@ llm:
   provider: ollama
   model: "qwen2.5:3b"
 pipeline:
+  stage_timeouts:
+    extract: 60
+    validate: 10
+```
   stage_timeouts:
     extract: 60
     validate: 10
