@@ -30,6 +30,17 @@ apex dashboard
 
 `ApexCrawler_最终版方案.md` — 567 行完整方案，15 位专家评审
 
+## 推荐集成
+
+| 能力 | 推荐工具 | 方式 |
+|------|---------|------|
+| 反检测浏览器 | CloakBrowser v0.3.14 | `pip install cloakbrowser` |
+| Firefox 分支 | Camoufox 0.4.11 | `pip install camoufox` |
+| CAPTCHA | CapSolver ($0.80/千次) | API key |
+| 代理池 | proxy_pool + IPRoyal | Docker + 按量 |
+| WASM 分析 | wabt + wasm-tools | brew/apt install |
+| 指纹验证 | CreepJS + BrowserLeaks | 在线 |
+
 ## 许可
 
 MIT — 教育研究用途
