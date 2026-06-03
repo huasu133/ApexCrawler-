@@ -235,7 +235,11 @@ class ExtractStage:
         # Step 2: Fall back to browser
         html = await self._try_browser(ctx)
         if html:
-            ctx.raw_html = self._cleaner.clean(html) if html else ""
+            try:
+                ctx.raw_html = self._cleaner.clean(html)
+            except Exception:
+                ctx.raw_html = html
+                logger.warning("[extract] cleaner failed, using raw html")
             ctx.extraction_confidence = 0.5
             return ctx
 
@@ -291,11 +295,12 @@ class ExtractStage:
                 proxy=proxy, headers=headers,
             ) as c:
                 r = await c.get(target_url)
+                ctx._last_status = r.status_code
                 r.raise_for_status()
                 html = r.text
 
             # Brotli decompression support
-            if html and len(html) < 100:
+            if r.headers.get("Content-Encoding") == "br":
                 from ..utils.brotli_support import decompress_brotli
                 raw = r.content
                 decompressed = decompress_brotli(raw)

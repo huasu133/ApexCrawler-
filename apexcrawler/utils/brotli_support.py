@@ -20,8 +20,8 @@ def decompress_brotli(data: bytes) -> bytes:
         import brotli
         return brotli.decompress(data)
     except ImportError:
-        logger.warning("brotli not installed — returning raw data")
-        return data
+        logger.warning("brotli not installed — returning None")
+        return None
 
 
 # Brotli-aware Accept-Encoding header

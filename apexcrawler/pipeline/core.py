@@ -82,10 +82,8 @@ class PipelineExecutor:
 
                 # RateController: feed signal based on stage result
                 if self._rate_ctrl:
-                    if hasattr(ctx, 'raw_html') and ctx.raw_html and len(ctx.raw_html) > 200:
+                    if hasattr(ctx, 'raw_html') and ctx.raw_html and len(ctx.raw_html) > 0:
                         self._rate_ctrl.signal_success()
-                    elif stage.name == "extract":
-                        self._rate_ctrl.signal(status=429)
 
             except asyncio.CancelledError:
                 await self._rollback(executed, ctx)
@@ -96,6 +94,8 @@ class PipelineExecutor:
                 return False, ctx
             except RetryableError as e:
                 ctx.stage_errors.setdefault(stage.name, []).append(str(e))
+                if self._rate_ctrl and stage.name == "extract":
+                    self._rate_ctrl.signal(status=429)
                 await self._rollback(executed, ctx)
                 return False, ctx
         return True, ctx
