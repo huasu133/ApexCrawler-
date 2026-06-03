@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import Literal
+from typing import Literal, Optional
 
 
 class EngineConfig(BaseModel):
@@ -36,7 +36,7 @@ class CacheConfig(BaseModel):
     """Configuration for the caching subsystem."""
 
     backend: Literal["redis", "memory"] = "memory"
-    redis_url: SecretStr | None = None
+    redis_url: Optional[SecretStr] = None
     ttl_seconds: int = 3600
 
 
@@ -44,7 +44,7 @@ class LLMConfig(BaseModel):
     """Configuration for LLM-based extraction / decision engines."""
 
     provider: Literal["openai", "claude", "ollama", "deepseek"] = "ollama"
-    api_key: SecretStr | None = None
+    api_key: Optional[SecretStr] = None
     model: str = "qwen2.5:3b"
     base_url: str = "http://localhost:11434/v1"
     max_tokens: int = 1024

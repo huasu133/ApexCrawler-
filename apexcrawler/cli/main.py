@@ -323,6 +323,11 @@ def ask(ctx: click.Context, query: str, output: str | None, live: bool) -> None:
     # ── Step 1: Parse query ──
     urls = re.findall(r'https?://[^\s"]+', query)
     if not urls:
+        # Auto-detect bare domains like "huaspeed.cc" or "amazon.com"
+        bare = re.findall(r'\b([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?:/[^\s]*)?)\b', query)
+        if bare:
+            urls = [f"https://{bare[0]}"]
+    if not urls:
         # Try domain inference
         domain_hints = {
             "amazon": "https://www.amazon.com/s?k=",
@@ -698,6 +703,11 @@ document.getElementById('query').addEventListener('keydown', e => {
         query = req.query
 
         urls = re.findall(r'https?://[^\s"]+', query)
+    if not urls:
+        # Auto-detect bare domains like "huaspeed.cc" or "amazon.com"
+        bare = re.findall(r'\b([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?:/[^\s]*)?)\b', query)
+        if bare:
+            urls = [f"https://{bare[0]}"]
         if not urls:
             raise HTTPException(400, "查询中未包含 URL")
 
