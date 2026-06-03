@@ -29,9 +29,15 @@ class StageConfig:
 class PipelineExecutor:
     """Async pipeline executor with retry, timeout, and rollback."""
 
-    def __init__(self, stages: list, configs: dict[str, StageConfig] | None = None):
+    def __init__(self, stages: list, configs: dict[str, StageConfig] | None = None, settings=None):
         self._stages = stages
         self._configs = configs or {}
+        # Merge stage_timeouts from Settings if provided
+        if settings:
+            stage_timeouts = getattr(settings.pipeline, "stage_timeouts", {})
+            for name, timeout in stage_timeouts.items():
+                if name not in self._configs:
+                    self._configs[name] = StageConfig(timeout=float(timeout))
 
     async def run(self, ctx: PipelineContext):
         """Run all stages sequentially. Returns (success, ctx)."""

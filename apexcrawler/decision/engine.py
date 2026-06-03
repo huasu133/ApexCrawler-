@@ -1,7 +1,7 @@
 """LLM-based adaptive decision engine with three-tier caching."""
 
 from __future__ import annotations
-import logging, time
+import logging, re, time
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -16,6 +16,16 @@ VENDOR_SIGNATURES = {
     "f5_shape": {"cookies": ["reese84", "TS01", "TSxxxxxxxx"]},
 }
 
+# Multi-engine switch signals — triggers browser fallback / engine rotation
+SWITCH_SIGNALS = {
+    "captcha": r"(captcha|recaptcha|hcaptcha|turnstile)",
+    "cloudflare_challenge": r"cf-challenge|_cf_chl_opt",
+    "datadome_block": r"datadome|x-datadome",
+    "empty_body": 200,  # less than 200 bytes = likely blocked
+    "rate_limit": r"rate\.limit|too\.many\.requests|429",
+    "waf_block": r"access\.denied|blocked|forbidden",
+}
+
 class DecisionEngine:
     """Three-tier decision engine: L0 rules → L1 local model → L2 API."""
     
@@ -27,8 +37,18 @@ class DecisionEngine:
     async def analyze(self, html: str, headers: dict, status: int) -> dict[str, Any]:
         """Analyze page response for anti-crawl signals."""
         vendor = self._detect_vendor(html, headers)
+        switch_signal = self._detect_switch_signals(html, headers, status)
         retry_after = int(headers.get("retry-after", 60))
         
+        if switch_signal:
+            return {
+                "action": "switch_engine",
+                "signal": switch_signal,
+                "vendor": vendor,
+                "retry_after": retry_after,
+                "confidence": 0.9,
+            }
+
         if status == 403 or status == 429:
             return {
                 "action": "backoff",
@@ -89,3 +109,21 @@ class DecisionEngine:
             "f5_shape": "cloaked",
         }
         return engine_map.get(vendor, "cloaked")
+
+    def _detect_switch_signals(self, html: str, headers: dict, status: int) -> str:
+        """Detect engine-switch signals from HTML/headers/status."""
+        html_lower = html.lower() if html else ""
+        headers_str = str(headers).lower()
+
+        # Check empty body (likely blocked)
+        if status == 200 and len(html) < SWITCH_SIGNALS["empty_body"]:
+            return "empty_body"
+
+        # Check regex-based signals
+        for signal_name, pattern in SWITCH_SIGNALS.items():
+            if isinstance(pattern, int):
+                continue  # skip non-regex entries
+            if re.search(pattern, html_lower) or re.search(pattern, headers_str):
+                return signal_name
+
+        return ""
