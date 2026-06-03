@@ -157,20 +157,22 @@ def crawl(
         from ..extraction.schema import get_schema
         from ..pipeline.stages import (
             ScheduleStage, RouteStage, EvadeStage,
-            ExtractStage, ValidateStage, StoreStage,
+            ExtractStage, ValidateStage, FontDecodeStage, StoreStage,
         )
-        from ..pipeline.core import PipelineExecutor, StageConfig
+        from ..pipeline.core import PipelineExecutor, StageConfig, RetryPolicy
         from ..behavior.timing import TimingScheduler
         from ..pipeline.session_manager import SessionManager
         from ..pipeline.rate_controller import RateController
         from ..http.connection_pool import ConnectionReuseManager
         from ..http.tls_router import TLSRouter
+        from ..pipeline.degrade import DegradeManager
 
         schema = get_schema(schema_name)
 
         # Build shared services
         session_mgr = SessionManager()
         rate_ctrl = RateController()
+        conn_mgr = ConnectionReuseManager()
         tls_router = TLSRouter()
 
         for idx, target_url in enumerate(urls, 1):
@@ -195,16 +197,24 @@ def crawl(
                     EvadeStage(router=tls_router, proxies=[proxy_url] if proxy_url else []),
                     ExtractStage(
                         engine_factory=None,
-                        conn_manager=None,
+                        conn_manager=conn_mgr,
                     ),
                     ValidateStage(),
+                    FontDecodeStage(),
                     StoreStage(),
                 ]
                 configs = {
-                    "extract": StageConfig(timeout=timeout),
+                    "extract": StageConfig(timeout=timeout, retry=RetryPolicy(max_retries=retries)),
                     "schedule": StageConfig(timeout=10),
                 }
-                executor = PipelineExecutor(stages, configs, settings=settings)
+                degrade_mgr = DegradeManager()
+                executor = PipelineExecutor(
+                    stages, configs,
+                    settings=settings,
+                    session_manager=session_mgr,
+                    rate_controller=rate_ctrl,
+                    degrade_manager=degrade_mgr,
+                )
                 ok, result = await executor.run(ctx_obj)
 
                 duration = result.duration()

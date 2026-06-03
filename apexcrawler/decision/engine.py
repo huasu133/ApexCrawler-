@@ -13,7 +13,7 @@ VENDOR_SIGNATURES = {
     "datadome": {"cookies": ["datadome"], "headers": ["x-datadome"]},
     "perimeterx": {"cookies": ["_px3", "_pxde", "_pxhd"]},
     "kasada": {"headers": ["x-kpsdk-ct", "x-kpsdk-cd"]},
-    "f5_shape": {"cookies": ["reese84", "TS01", "TSxxxxxxxx"]},
+    "f5_shape": {"cookies": ["reese84"]},
 }
 
 # Multi-engine switch signals — triggers browser fallback / engine rotation
@@ -97,6 +97,12 @@ class DecisionEngine:
             for c in sigs.get("cookies", []):
                 if c.lower() in str(headers.get("set-cookie", "")).lower():
                     return vendor
+
+        # F5 Shape: regex match for TS cookie patterns (e.g. TSa1b2c3d4)
+        cookie_str = str(headers.get("set-cookie", "")).lower()
+        if re.search(r'TS[a-fA-F0-9]{6,}', cookie_str):
+            return "f5_shape"
+
         return ""
     
     def _recommend_engine(self, vendor: str) -> str:
@@ -105,7 +111,7 @@ class DecisionEngine:
             "akamai": "cloaked",
             "datadome": "cloaked",
             "perimeterx": "camoufox",
-            "kasada": "patched",
+            "kasada": "cloaked",
             "f5_shape": "cloaked",
         }
         return engine_map.get(vendor, "cloaked")

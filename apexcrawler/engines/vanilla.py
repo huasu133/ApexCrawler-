@@ -54,6 +54,7 @@ class VanillaEngine(BaseEngine):
             self._playwright = await async_playwright().start()
             self._browser = await self._playwright.chromium.launch(
                 headless=self._headless,
+                args=["--disable-blink-features=AutomationControlled"],
             )
             self._context = await self._browser.new_context(
                 viewport=self._viewport,

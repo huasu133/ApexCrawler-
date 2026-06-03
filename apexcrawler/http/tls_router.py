@@ -13,6 +13,8 @@ class TLSProfile:
     alpn: list[str]     # ["h2", "http/1.1"]
     platform: str       # "Windows"
     accept_language: str  # "en-US,en;q=0.9"
+    sec_ch_ua: str = ""          # Sec-CH-UA header value
+    sec_ch_ua_platform: str = "" # Sec-CH-UA-Platform header value
 
 
 # Pre-configured profiles
@@ -24,6 +26,8 @@ PROFILES = {
         alpn=["h2", "http/1.1"],
         platform="Windows",
         accept_language="en-US,en;q=0.9",
+        sec_ch_ua='"Google Chrome";v="124", "Chromium";v="124", "Not=A?Brand";v="24"',
+        sec_ch_ua_platform='"Windows"',
     ),
     "chrome_131": TLSProfile(
         name="chrome_131",
@@ -32,6 +36,8 @@ PROFILES = {
         alpn=["h2", "http/1.1"],
         platform="Windows",
         accept_language="en-US,en;q=0.9",
+        sec_ch_ua='"Google Chrome";v="131", "Chromium";v="131", "Not=A?Brand";v="24"',
+        sec_ch_ua_platform='"Windows"',
     ),
     "firefox_124": TLSProfile(
         name="firefox_124",
@@ -40,6 +46,8 @@ PROFILES = {
         alpn=["h2", "http/1.1"],
         platform="Windows",
         accept_language="en-US,en;q=0.9",
+        sec_ch_ua='"Firefox";v="124"',
+        sec_ch_ua_platform='"Windows"',
     ),
 }
 

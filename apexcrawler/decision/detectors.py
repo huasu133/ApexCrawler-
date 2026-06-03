@@ -398,7 +398,10 @@ class SignalDetector:
         results: list[SignalResult] = []
         for detector in self._detectors:
             try:
-                result = detector.detect(html, headers)  # type: ignore
+                if isinstance(detector, WAFDetector):
+                    result = detector.detect(html, headers, status)
+                else:
+                    result = detector.detect(html, headers)  # type: ignore
                 results.append(result)
             except Exception as e:
                 logger.warning(f"Detector {type(detector).__name__} failed: {e}")

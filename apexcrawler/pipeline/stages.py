@@ -276,11 +276,11 @@ class ExtractStage:
             target_url = fetch_url
             headers = {"User-Agent": ctx.user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"}
 
-            # DNS cache: resolve host to IP for faster connection
+            # DNS cache: resolve host to IP for faster connection (HTTP only; HTTPS needs hostname for SSL)
             parsed = urlparse(target_url)
             host = parsed.netloc.split(":")[0]
             resolved_ip = dns_cache.resolve(host)
-            if resolved_ip != host:
+            if resolved_ip != host and parsed.scheme == "http":
                 netloc = parsed.netloc.replace(host, resolved_ip)
                 target_url = urlunparse(parsed._replace(netloc=netloc))
                 headers["Host"] = host
