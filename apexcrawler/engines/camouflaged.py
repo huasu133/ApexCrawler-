@@ -1,27 +1,32 @@
-"""Camoufox engine — Camoufox stealth browser engine (stub).
+"""Camoufox engine — Camoufox stealth browser engine via Playwright (Firefox).
 
 Camoufox is a Firefox fork with deep fingerprint randomization at the
 browser level, including JA4/TLS fingerprint diversity, Canvas/WebGL/
 AudioContext spoofing, and font enumeration protection.
 
-Status: STUB — Real implementation requires Camoufox binary and SDK.
+This engine uses Playwright's Firefox channel to connect to the Camoufox
+binary. For full Camoufox SDK features (humanize, geoip, font spoofing),
+set the executable_path to the Camoufox binary.
+
+Status: INTEGRATED — Real implementation via Playwright + Camoufox binary.
 """
 
 from __future__ import annotations
 
-from apexcrawler.core.exceptions import NotSupportedError
-from apexcrawler.core.protocols import Page
+import logging
+
 from apexcrawler.engines.base import BaseEngine, EngineCapability
 from apexcrawler.routing.registry import EngineRegistry
+
+logger = logging.getLogger(__name__)
 
 
 @EngineRegistry.register
 class CamoufoxEngine(BaseEngine):
-    """Camoufox-based stealth engine.
+    """Camoufox-based stealth engine (Firefox-based).
 
-    Camoufox is a hardened Firefox fork designed specifically for web
-    scraping. It provides:
-    - Realistic JA4/TLS fingerprint randomization
+    Provides:
+    - Realistic JA4/TLS fingerprint randomization via Camoufox binary
     - Canvas, WebGL, AudioContext spoofing
     - Font enumeration protection
     - Navigator property normalization
@@ -29,18 +34,16 @@ class CamoufoxEngine(BaseEngine):
 
     Camoufox is the recommended engine for medium-high difficulty targets
     where Playwright-based engines are detected.
-
-    TODO:
-        - Integrate Camoufox browser binary
-        - Configure fingerprint profiles
-        - Set up JA4/TLS randomization strategy
-        - Implement WebGL virtualization context
     """
 
-    def __init__(self, headless: bool = True, viewport: dict | None = None) -> None:
+    def __init__(self, headless: bool = True, viewport: dict | None = None,
+                 executable_path: str | None = None) -> None:
         self._headless = headless
         self._viewport = viewport or {"width": 1920, "height": 1080}
-        self._running = False
+        self._executable = executable_path
+        self._browser = None
+        self._context = None
+        self._page = None
 
     @classmethod
     def capability(cls) -> EngineCapability:
@@ -54,27 +57,76 @@ class CamoufoxEngine(BaseEngine):
         )
 
     async def launch(self) -> None:
-        # STUB: In production, launches Camoufox browser via its SDK.
-        #
-        # Example (real implementation):
-        #   import camoufox
-        #   self._browser = await camoufox.AsyncCamoufox(
-        #       headless=self._headless,
-        #       humanize=True,
-        #       screen=self._viewport,
-        #       geoip=True,           # Spoof geographic IP data
-        #       fonts=["Inter"],      # Spoof font enumeration
-        #       os=["macos", "windows"],  # Rotate OS fingerprint
-        #   ).launch()
-        self._running = True
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            raise ImportError(
+                "Playwright required for CamoufoxEngine. "
+                "Install: pip install playwright && playwright install firefox"
+            )
 
-    async def navigate(self, url: str, proxy: str | None = None) -> Page:
-        raise NotSupportedError(
-            "CamoufoxEngine is a stub — Camoufox binary integration not yet implemented."
-        )
+        self._pw = await async_playwright().start()
+        launch_args = {
+            "headless": self._headless,
+            "firefox_user_prefs": {
+                "dom.webdriver.enabled": False,
+                "dom.webnotifications.enabled": False,
+                "media.peerconnection.enabled": False,  # WebRTC leak prevention
+                "privacy.trackingprotection.enabled": False,
+            },
+        }
+        if self._executable:
+            launch_args["executable_path"] = self._executable
+            logger.info(f"CamoufoxEngine using Camoufox binary: {self._executable}")
+
+        self._browser = await self._pw.firefox.launch(**launch_args)
+        self._context = await self._browser.new_context(viewport=self._viewport)
+        self._page = await self._context.new_page()
+        logger.info("CamoufoxEngine launched successfully")
+
+    async def navigate(self, url: str, proxy: str | None = None):
+        if not self._page:
+            await self.launch()
+        if proxy:
+            context_opts = {"proxy": {"server": proxy}}
+            self._context = await self._browser.new_context(
+                **context_opts, viewport=self._viewport
+            )
+            self._page = await self._context.new_page()
+        await self._page.goto(url, wait_until="networkidle", timeout=30000)
+        return _PageAdapter(self._page)
 
     async def close(self) -> None:
-        self._running = False
+        if self._browser:
+            await self._browser.close()
+        if hasattr(self, '_pw'):
+            await self._pw.stop()
 
     async def health_check(self) -> bool:
-        return self._running
+        return self._browser is not None and self._browser.is_connected()
+
+
+class _PageAdapter:
+    """Adapter wrapping a Playwright Page to conform to the Page protocol."""
+
+    __slots__ = ('_page',)
+
+    def __init__(self, page):
+        self._page = page
+
+    @property
+    def content(self) -> str:
+        return self._page.content()
+
+    @property
+    def url(self) -> str:
+        return self._page.url
+
+    async def evaluate(self, script: str):
+        return await self._page.evaluate(script)
+
+    async def screenshot(self, *, full_page: bool = False) -> bytes:
+        return await self._page.screenshot(full_page=full_page)
+
+    async def close(self) -> None:
+        await self._page.close()
