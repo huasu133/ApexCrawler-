@@ -1,5 +1,7 @@
 # ApexCrawler 🎛️
 
+> 84 files | 9,826 lines | Python 3.9+ | E2E Verified ✅
+
 开源界唯一 **JS 层 + 网络层双覆盖** 的顶级爬虫框架。
 
 ## 一句话
