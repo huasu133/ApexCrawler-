@@ -535,14 +535,29 @@ async def _try_http_extract(url: str, hints: dict) -> dict | None:
         return None
 
     try:
+        from urllib.parse import urlparse, urlunparse
+        from apexcrawler.utils.dns_cache import dns_cache
+
+        target_url = url
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+
+        # DNS cache: resolve host to IP for faster connection
+        parsed = urlparse(target_url)
+        host = parsed.netloc.split(":")[0]
+        resolved_ip = dns_cache.resolve(host)
+        if resolved_ip != host:
+            netloc = parsed.netloc.replace(host, resolved_ip)
+            target_url = urlunparse(parsed._replace(netloc=netloc))
+            headers["Host"] = host
+
         async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
             resp = await client.get(
-                url,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.9",
-                },
+                target_url,
+                headers=headers,
             )
             html = resp.text
     except Exception:

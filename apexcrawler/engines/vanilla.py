@@ -9,10 +9,15 @@ from __future__ import annotations
 
 from playwright.async_api import async_playwright
 
+import logging
+
 from apexcrawler.core.exceptions import EngineError
 from apexcrawler.core.protocols import Page
 from apexcrawler.engines.base import BaseEngine, EngineCapability
+from apexcrawler.engines.subresource import ensure_subresource_load
 from apexcrawler.routing.registry import EngineRegistry
+
+logger = logging.getLogger(__name__)
 
 
 @EngineRegistry.register
@@ -78,6 +83,10 @@ class VanillaEngine(BaseEngine):
             page = await self._context.new_page()
 
         await page.goto(url, wait_until="domcontentloaded")
+        try:
+            await ensure_subresource_load(page)
+        except Exception:
+            logger.warning("Subresource load failed", exc_info=True)
         # Wrapped in an adapter so the caller can close it cleanly.
         return _PageAdapter(page, owns_browser_context=(proxy is not None))
 

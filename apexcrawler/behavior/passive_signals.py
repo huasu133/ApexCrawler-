@@ -459,3 +459,93 @@ class SessionBehavior:
 
     def increment_page(self) -> None:
         self.page_count += 1
+
+
+# ════════════════════════════════════════════════════════════════
+#  PassiveSignalProfiler — orchestrator for Humanizer integration
+# ════════════════════════════════════════════════════════════════
+
+
+class PassiveSignalProfiler:
+    """Orchestrates passive behavioral signals for injection into
+    the Humanizer's behavior methods.
+
+    Wraps scroll-depth sampling, mouse-zone heat-map, tab-switch
+    simulation, sendBeacon interception, and DNS prefetch noise —
+    all of which are passively *detected* by anti-bot scripts rather
+    than actively *performed* by the crawler.
+
+    Usage::
+
+        profiler = PassiveSignalProfiler(page, viewport_w=1920, viewport_h=1080)
+        depth = profiler.sample_scroll_depth()       # e.g. 0.42
+        x, y = profiler.sample_mouse_zone()           # e.g. (845.3, 432.1)
+        await profiler.inject_dns_prefetch(page)
+        await profiler.monitor_sendbeacon()
+    """
+
+    def __init__(
+        self,
+        page: Any = None,
+        viewport_w: float = 1920,
+        viewport_h: float = 1080,
+    ) -> None:
+        self._page = page
+        self._viewport_w = viewport_w
+        self._viewport_h = viewport_h
+        self._session = SessionBehavior()
+        self._scroll_depth_sample: float | None = None
+        self._mouse_zone_sample: tuple[float, float] | None = None
+
+    @property
+    def session(self) -> SessionBehavior:
+        """Cross-page behavior persistence (wpm, mouse speed, scroll habits)."""
+        return self._session
+
+    @property
+    def scroll_depth(self) -> float:
+        """Lazily sampled scroll depth fraction (0.0–1.0)."""
+        if self._scroll_depth_sample is None:
+            self._scroll_depth_sample = sample_scroll_depth()
+        return self._scroll_depth_sample
+
+    @property
+    def mouse_zone(self) -> tuple[float, float]:
+        """Lazily sampled (x, y) from the mouse heat-map distribution."""
+        if self._mouse_zone_sample is None:
+            self._mouse_zone_sample = sample_mouse_zone(
+                self._viewport_w, self._viewport_h
+            )
+        return self._mouse_zone_sample
+
+    def resample(self) -> None:
+        """Force re-sampling of scroll depth and mouse zone.
+
+        Call this when entering a new page within the same session.
+        """
+        self._scroll_depth_sample = sample_scroll_depth()
+        self._mouse_zone_sample = sample_mouse_zone(
+            self._viewport_w, self._viewport_h
+        )
+
+    async def simulate_tab_switch(self, duration_s: float = 5.0) -> None:
+        """Trigger a visibilitychange event cycle to mimic tab switching."""
+        if self._page is not None:
+            await simulate_tab_switch(self._page, duration_s)
+
+    async def monitor_sendbeacon(self) -> dict[str, int]:
+        """Install sendBeacon interceptor and return intercepted count/urls."""
+        if self._page is not None:
+            return await monitor_sendbeacon(self._page)
+        return {"intercepted": 0, "urls": []}
+
+    async def inject_dns_prefetch(self, count: int = 3) -> None:
+        """Inject DNS prefetch and preconnect links."""
+        if self._page is not None:
+            await inject_dns_prefetch(self._page, count=count)
+
+    def update_viewport(self, w: float, h: float) -> None:
+        """Update viewport dimensions (e.g. after window resize)."""
+        self._viewport_w = w
+        self._viewport_h = h
+        self._mouse_zone_sample = None  # force re-sample on next access

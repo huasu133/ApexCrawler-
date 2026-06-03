@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from ..core.context import PipelineContext
 from ..core.exceptions import (
@@ -19,21 +20,40 @@ from ..core.exceptions import (
 )
 from ..http.tls_router import TLSRouter
 
+if TYPE_CHECKING:
+    pass
+
 logger = logging.getLogger(__name__)
 
 
 class ScheduleStage:
-    """Pass-through stage that collects the task from the scheduler.
+    """Validates the target URL and enforces human-like scheduling delays.
 
-    Responsible for validating that the target URL is present and well-formed.
+    Uses a :class:`TimingScheduler` to compute inter-request delays
+    that mimic real browsing cadence.  When no scheduler is provided
+    the stage acts as a pass-through (backward-compatible).
     """
 
     name = "schedule"
 
+    def __init__(self, timing: TimingScheduler | None = None) -> None:
+        self._timing = timing
+
     async def execute(self, ctx: PipelineContext) -> PipelineContext:
         if not ctx.target_url:
             raise ConfigurationError("target_url is required")
-        logger.info(f"[schedule] trace={ctx.trace_id} url={ctx.target_url}")
+
+        if self._timing is not None:
+            delay = self._timing.compute_delay()
+            logger.info(
+                f"[schedule] trace={ctx.trace_id} computed_delay={delay:.2f}s"
+                f" url={ctx.target_url}"
+            )
+            import asyncio
+            await asyncio.sleep(delay)
+        else:
+            logger.info(f"[schedule] trace={ctx.trace_id} url={ctx.target_url}")
+
         return ctx
 
     async def rollback(self, ctx: PipelineContext) -> None:
@@ -42,19 +62,38 @@ class ScheduleStage:
 
 
 class RouteStage:
-    """Selects an engine for the target URL using EngineMatcher rules."""
+    """Selects an engine for the target URL via :class:`DecisionEngine`.
+
+    Falls back to the cached :class:`_DefaultEngineMatcher` for URL-based
+    host-keyword matching when no :class:`DecisionEngine` is injected.
+    """
 
     name = "route"
 
-    def __init__(self, matcher: object | None = None):
+    def __init__(
+        self,
+        matcher: object | None = None,
+        engine: DecisionEngine | None = None,
+    ) -> None:
         self._matcher = matcher
+        self._engine = engine
 
     async def execute(self, ctx: PipelineContext) -> PipelineContext:
-        matcher = self._matcher if self._matcher is not None else _DefaultEngineMatcher()
-        result = matcher.match(ctx.target_url)
-        ctx.selected_engine = result.engine
-        ctx.route_reason = result.reason
-        ctx.target_difficulty = result.difficulty
+        if self._engine is not None:
+            result = await self._engine.recommend(ctx.target_url)
+            ctx.selected_engine = result.get("entry_point", "http")
+            ctx.route_reason = (
+                f"DecisionEngine (entry={result.get('entry_point', 'http')},"
+                f" confidence={result.get('confidence', 0.5):.2f})"
+            )
+            ctx.target_difficulty = int(result.get("confidence", 0.5) * 10)
+        else:
+            matcher = self._matcher or _DefaultEngineMatcher()
+            result = matcher.match(ctx.target_url)
+            ctx.selected_engine = result.engine
+            ctx.route_reason = result.reason
+            ctx.target_difficulty = result.difficulty
+
         logger.info(
             f"[route] trace={ctx.trace_id} engine={ctx.selected_engine} "
             f"reason={ctx.route_reason} difficulty={ctx.target_difficulty}"
@@ -68,7 +107,7 @@ class RouteStage:
 
 
 class EvadeStage:
-    """Assigns proxy, User-Agent, and TLS profile to evade detection."""
+    """Assigns proxy, User-Agent, TLS profile, and device fingerprint to evade detection."""
 
     name = "evade"
 
@@ -76,10 +115,16 @@ class EvadeStage:
         self,
         router: TLSRouter | None = None,
         proxies: list[str] | None = None,
+        device_profile: "DeviceProfile | None" = None,
     ):
         self._router = router or TLSRouter()
         self._proxies = proxies or []
         self._proxy_idx = 0
+        if device_profile is None:
+            from ..fingerprint.consistency import DEVICE_PROFILES
+            self._device_profile = DEVICE_PROFILES[0]
+        else:
+            self._device_profile = device_profile
 
     async def execute(self, ctx: PipelineContext) -> PipelineContext:
         # Select TLS profile with rotation
@@ -100,9 +145,24 @@ class EvadeStage:
             ctx.proxy = self._proxies[self._proxy_idx % len(self._proxies)]
             self._proxy_idx += 1
 
+        # Fill device fingerprint attributes from DeviceProfile
+        dp = self._device_profile
+        ctx.webgl_renderer = dp.webgl_renderer
+        ctx.canvas_hash = hashlib.sha256(
+            f"{dp.name}:{dp.webgl_renderer}".encode()
+        ).hexdigest()[:16]
+        ctx.audio_fingerprint = hashlib.sha256(
+            f"audio:{dp.name}:{dp.platform}".encode()
+        ).hexdigest()[:16]
+        ctx.fonts = [
+            "Arial", "Times New Roman", "Courier New", "Georgia",
+            "Verdana", "Trebuchet MS", "Comic Sans MS",
+        ]
+
         logger.info(
             f"[evade] trace={ctx.trace_id} profile={profile.name} "
-            f"proxy={ctx.proxy or 'none'} ja4={profile.ja4_prefix}"
+            f"proxy={ctx.proxy or 'none'} ja4={profile.ja4_prefix} "
+            f"device={dp.name}"
         )
         return ctx
 
@@ -112,20 +172,32 @@ class EvadeStage:
         ctx.tls_profile = ""
         ctx.ja4_fingerprint = ""
         ctx.browser_profile = {}
+        ctx.webgl_renderer = ""
+        ctx.canvas_hash = ""
+        ctx.audio_fingerprint = ""
+        ctx.fonts = []
 
 
 class ExtractStage:
     """Navigates to target URL and extracts content.
 
     Two modes:
-    1. HTTP mode (fast): httpx direct request
+    1. HTTP mode (fast): httpx direct request, optionally routed through
+       a :class:`ConnectionReuseManager`-managed proxy for connection reuse.
     2. Browser mode (full): Playwright/CloakBrowser via engine pool
     """
 
     name = "extract"
 
-    def __init__(self, engine_factory=None):
+    def __init__(self, engine_factory=None, validator: "CrossValidator | None" = None,
+                 mobile_sniffer: "MobileAPISniffer | None" = None,
+                 conn_manager: "ConnectionReuseManager | None" = None):
         self._engine_factory = engine_factory
+        from ..extraction.cross_validator import CrossValidator as CV
+        from ..routing.mobile_sniffer import MobileAPISniffer as MS
+        self._validator = validator or CV()
+        self._mobile_sniffer = mobile_sniffer or MS()
+        self._conn_manager = conn_manager
 
     async def execute(self, ctx: PipelineContext) -> PipelineContext:
         if not ctx.target_url:
@@ -136,11 +208,16 @@ class ExtractStage:
             f"url={ctx.target_url}"
         )
 
-        # Step 1: Try lightweight HTTP
+        # Step 1: Try lightweight HTTP (includes mobile API probe)
+        self._api_detected = False
         html = await self._try_http(ctx)
         if html and len(html) > 200:
             ctx.raw_html = html
-            ctx.extraction_confidence = 0.7
+            # Use higher confidence for API/JSON responses
+            if self._api_detected:
+                ctx.extraction_confidence = 0.8
+            else:
+                ctx.extraction_confidence = 0.7
             return ctx
 
         # Step 2: Fall back to browser
@@ -153,13 +230,71 @@ class ExtractStage:
         raise ExtractionError(detail=f"Failed to fetch {ctx.target_url}")
 
     async def _try_http(self, ctx: PipelineContext) -> str | None:
+        # Step 0: Probe mobile/API endpoints before hitting the full page
+        mobile_endpoint = await self._mobile_sniffer.probe(ctx.target_url)
+        fetch_url = mobile_endpoint.url if mobile_endpoint else ctx.target_url
+        is_api = mobile_endpoint is not None and mobile_endpoint.confidence >= 0.9
+
+        if mobile_endpoint:
+            logger.info(
+                f"[extract] mobile_sniffer → {fetch_url} "
+                f"(confidence={mobile_endpoint.confidence:.1f}, source={mobile_endpoint.source})"
+            )
+
         try:
             import httpx
-            async with httpx.AsyncClient(timeout=15, follow_redirects=True,
-                headers={"User-Agent": ctx.user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"}) as c:
-                r = await c.get(ctx.target_url)
+            from urllib.parse import urlparse, urlunparse
+            from ..utils.dns_cache import dns_cache
+
+            target_url = fetch_url
+            headers = {"User-Agent": ctx.user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"}
+
+            # DNS cache: resolve host to IP for faster connection
+            parsed = urlparse(target_url)
+            host = parsed.netloc.split(":")[0]
+            resolved_ip = dns_cache.resolve(host)
+            if resolved_ip != host:
+                netloc = parsed.netloc.replace(host, resolved_ip)
+                target_url = urlunparse(parsed._replace(netloc=netloc))
+                headers["Host"] = host
+
+            # Connection reuse: obtain proxy URL from ConnectionReuseManager
+            proxy = None
+            if self._conn_manager is not None:
+                proxy = await self._conn_manager.get_proxy(ctx.target_url)
+
+            async with httpx.AsyncClient(
+                timeout=15, follow_redirects=True,
+                proxy=proxy, headers=headers,
+            ) as c:
+                r = await c.get(target_url)
                 r.raise_for_status()
-                return r.text
+                html = r.text
+
+            # If we got JSON from a mobile API, use it directly — skip browser fallback
+            if is_api:
+                self._api_detected = True
+                ctx.extraction_confidence = 0.8
+                logger.info(
+                    f"[extract] mobile API response received, confidence=0.8"
+                )
+                return html
+
+            # Cross-validate common fields from HTML
+            try:
+                for field in ["title", "description", "price", "name", "author"]:
+                    result = await self._validator.validate(html, field)
+                    if result["confidence"] > 0.5:
+                        logger.debug(
+                            f"[extract] cross_validator field={field} "
+                            f"value={result['value']} "
+                            f"confidence={result['confidence']:.2f} "
+                            f"sources_agree={result['sources_agree']}"
+                        )
+            except Exception:
+                logger.debug("cross_validator skipped (non-critical)")
+
+            return html
         except Exception as e:
             logger.warning(f"[extract] HTTP failed: {e}")
             return None
@@ -170,7 +305,7 @@ class ExtractStage:
         try:
             async with self._engine_factory.acquire(ctx.selected_engine) as engine:
                 page = await engine.navigate(ctx.target_url, proxy=ctx.proxy or None)
-                html = page.content
+                html = await page.content
                 await page.close()
                 return html
         except Exception as e:

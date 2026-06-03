@@ -10,9 +10,12 @@ Implements:
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import random
 import time
+
+logger = logging.getLogger(__name__)
 
 
 def _bezier_point(p0: tuple, p1: tuple, p2: tuple, p3: tuple, t: float) -> tuple[float, float]:
@@ -322,12 +325,22 @@ class Humanizer:
         typo_rate: float = 0.03,
         wpm: tuple[float, float] = (45, 65),
         session: object | None = None,
+        viewport_w: float = 1920,
+        viewport_h: float = 1080,
     ):
         self.page = page
         self.mouse = MouseSimulator(page)
         self.keyboard = KeyboardSimulator(page, typo_rate=typo_rate, wpm=wpm)
         self.scroll = ScrollSimulator(page)
-        self._session = session  # SessionBehavior for cross-page consistency
+
+        # Passive signal profiler — injects scroll-depth, mouse-zone,
+        # tab-switch, sendBeacon interceptor, and DNS prefetch signals
+        from .passive_signals import PassiveSignalProfiler
+
+        self._passive = PassiveSignalProfiler(
+            page, viewport_w=viewport_w, viewport_h=viewport_h
+        )
+        self._session = session or self._passive.session  # SessionBehavior for cross-page consistency
 
     async def warm_up(
         self,
@@ -360,6 +373,17 @@ class Humanizer:
         await self.scroll.scroll("down", distance=random.randint(200, 500), emulate=emulate)
         await asyncio.sleep(random.uniform(1.5, 4.0))
 
+        # Passive signals: DNS prefetch noise + sendBeacon interceptor
+        if emulate and self.page:
+            try:
+                await self._passive.inject_dns_prefetch(count=3)
+            except Exception:
+                logger.debug("DNS prefetch injection skipped")
+            try:
+                await self._passive.monitor_sendbeacon()
+            except Exception:
+                logger.debug("sendBeacon monitor skipped")
+
         # Increment session page count for cross-page behavior
         if self._session:
             self._session.increment_page()
@@ -384,8 +408,11 @@ class Humanizer:
         from .passive_signals import MouseIdlePattern
 
         idle_pattern = MouseIdlePattern()
-        base_x = viewport_w * random.uniform(0.3, 0.5)
-        base_y = viewport_h * random.uniform(0.3, 0.5)
+
+        # Use profiler's sampled mouse zone as idle base position
+        zone_x, zone_y = self._passive.mouse_zone
+        base_x = zone_x if emulate else viewport_w * random.uniform(0.3, 0.5)
+        base_y = zone_y if emulate else viewport_h * random.uniform(0.3, 0.5)
 
         if emulate and self.page:
             await idle_pattern.run_idle(
@@ -399,6 +426,36 @@ class Humanizer:
     async def pause(self, min_seconds: float = 0.5, max_seconds: float = 2.0) -> None:
         """Random pause between actions to simulate thinking time."""
         await asyncio.sleep(random.uniform(min_seconds, max_seconds))
+
+    async def human_scroll(
+        self,
+        direction: str = "down",
+        emulate: bool = True,
+        page_height: int = 5000,
+    ) -> None:
+        """Scroll with distance sampled from the passive profiler's scroll-depth
+        distribution.  Uses the power-law distribution calibrated against
+        real-world browsing data (Nielsen Norman Group).
+
+        Args:
+            direction: "up" or "down".
+            emulate: If True, execute actual scroll events via Playwright.
+            page_height: Estimated page height in pixels (used with scroll depth
+                         fraction to compute pixel distance).
+        """
+        depth_fraction = self._passive.scroll_depth
+        distance = int(page_height * depth_fraction)
+        distance = max(200, min(distance, 4000))
+
+        await self.scroll.scroll(
+            direction=direction, distance=distance, emulate=emulate
+        )
+        self._passive.resample()  # re-sample for next page interaction
+
+        logger.debug(
+            "human_scroll: depth=%.2f distance=%d direction=%s",
+            depth_fraction, distance, direction,
+        )
 
     async def human_wait(self, base: float = 1.0) -> None:
         """Wait a variable amount of time (normal distribution around base)."""

@@ -9,7 +9,7 @@ Priority: mobile subdomain → API subdomain → JSON endpoint → fallback
 from __future__ import annotations
 
 import logging
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -73,10 +73,22 @@ class MobileAPISniffer:
         except ImportError:
             return None
 
+        from apexcrawler.utils.dns_cache import dns_cache
+
         async with httpx.AsyncClient(timeout=5, follow_redirects=True) as client:
             for candidate in candidates:
                 try:
-                    resp = await client.head(candidate)
+                    # DNS cache: resolve host to IP for faster connection
+                    parsed = urlparse(candidate)
+                    host = parsed.netloc.split(":")[0]
+                    resolved_ip = dns_cache.resolve(host)
+                    if resolved_ip != host:
+                        netloc = parsed.netloc.replace(host, resolved_ip)
+                        candidate = urlunparse(parsed._replace(netloc=netloc))
+                        headers = {"Host": host}
+                        resp = await client.head(candidate, headers=headers)
+                    else:
+                        resp = await client.head(candidate)
                     if resp.status_code < 400:
                         ct = resp.headers.get("content-type", "")
                         is_json = "json" in ct.lower()

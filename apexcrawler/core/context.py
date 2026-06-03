@@ -36,6 +36,18 @@ class PipelineContext:
     ja4_fingerprint: str = ""
     tls_profile: str = ""
     browser_profile: dict = field(default_factory=dict)
+    webgl_renderer: str = ""
+    canvas_hash: str = ""
+    audio_fingerprint: str = ""
+    fonts: list[str] = field(default_factory=list)
+
+    # ── Device fingerprint fields (matching DeviceProfile) ──
+    webgl_renderer: str = ""
+    canvas_hash: str = ""
+    audio_fingerprint: str = ""
+    fonts: list[str] = field(default_factory=list)
+    timing_profile: str = ""
+    passive_signals_enabled: bool = False
 
     # ── Extract stage outputs ──
     raw_html: str = ""

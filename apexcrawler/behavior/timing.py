@@ -233,3 +233,56 @@ def is_weekday(now: datetime | None = None) -> bool:
     """Return True if today is a weekday (Mon-Fri)."""
     now = now or datetime.now()
     return now.date().weekday() in (0, 1, 2, 3, 4)
+
+
+# ── TimingScheduler ───────────────────────────────────────────
+
+
+class TimingScheduler:
+    """Content-driven timing scheduler that models human browsing cadence.
+
+    Combines time-of-day multiplier, content dwell estimation, and
+    session-fatigue gaps into a single delay value.  Each call to
+    :meth:`compute_delay` advances an internal page counter so gaps
+    grow naturally over a session.
+
+    Usage::
+
+        scheduler = TimingScheduler()
+        delay = scheduler.compute_delay(page_size_kb=120, text_length=3000)
+        await asyncio.sleep(delay)
+    """
+
+    def __init__(self, crawl_window: CrawlWindow | None = None) -> None:
+        self._window = crawl_window or CrawlWindow()
+        self._page_count = 0
+
+    def compute_delay(
+        self,
+        page_size_kb: float = 50.0,
+        text_length: int = 1000,
+        image_count: int = 3,
+    ) -> float:
+        """Return a human-like inter-request delay in seconds.
+
+        The delay is composed of:
+        1. Content dwell time (lognormal, driven by page metrics)
+        2. Session gap (grows with ``_page_count``)
+        3. Time-of-day multiplier (faster during work hours)
+
+        Returns at least 1.0 second.
+        """
+        multiplier = get_time_multiplier()
+        dwell = content_dwell_time(page_size_kb, text_length, image_count)
+        gap = session_gap(self._page_count)
+        self._page_count += 1
+
+        raw_delay = dwell + gap
+        if multiplier > 0:
+            raw_delay = raw_delay / multiplier
+
+        return max(1.0, raw_delay)
+
+    def reset(self) -> None:
+        """Reset the internal page counter (new session)."""
+        self._page_count = 0

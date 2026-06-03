@@ -18,6 +18,7 @@ import asyncio
 import logging
 
 from apexcrawler.engines.base import BaseEngine, EngineCapability
+from apexcrawler.engines.subresource import ensure_subresource_load
 from apexcrawler.routing.registry import EngineRegistry
 
 logger = logging.getLogger(__name__)
@@ -108,6 +109,10 @@ class CloakedEngine(BaseEngine):
             self._page = await self._context.new_page()
             await self._wasm_interceptor.inject(self._page)
         await self._page.goto(url, wait_until="networkidle", timeout=30000)
+        try:
+            await ensure_subresource_load(self._page)
+        except Exception:
+            logger.warning("Subresource load failed", exc_info=True)
         return _PageAdapter(self._page)
 
     async def close(self) -> None:
