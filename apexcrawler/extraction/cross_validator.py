@@ -102,8 +102,8 @@ class CrossValidator:
                     data = data[0]
                 if field in data:
                     return str(data.get(field))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"field extraction failed: {e}")
         return None
 
     def _from_og(self, html: str, field: str) -> str | None:

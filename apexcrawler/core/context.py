@@ -69,19 +69,6 @@ class PipelineContext:
 
 
 @dataclass
-class CrawlRequest:
-    """Input request for a single crawl task."""
-
-    url: str
-    priority: int = 0
-    schema: type | None = None
-    force_engine: str = ""
-    force_proxy: str = ""
-    force_geo: str = ""
-    max_retries: int = 3
-
-
-@dataclass
 class CrawlResult:
     """Final result of a crawl pipeline execution."""
 

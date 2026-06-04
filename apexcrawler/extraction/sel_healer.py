@@ -84,5 +84,6 @@ class SemanticRelocator:
                 return bool(tree.xpath(selector))
             else:
                 return bool(tree.cssselect(selector))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"selector test failed: {e}")
             return False

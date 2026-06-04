@@ -70,7 +70,8 @@ class MobileAPISniffer:
 
         try:
             import httpx
-        except ImportError:
+        except ImportError as e:
+            logger.warning(f"httpx import failed: {e}")
             return None
 
         from apexcrawler.utils.dns_cache import dns_cache

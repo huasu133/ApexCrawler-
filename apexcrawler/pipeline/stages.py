@@ -6,22 +6,14 @@ Each stage reads from and writes to PipelineContext.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from ..core.context import PipelineContext
-from ..core.exceptions import (
-    ConfigurationError,
-    ExtractionError,
-    NonRetryableError,
-    NotSupportedError,
-)
+from ..core.exceptions import ConfigurationError, ExtractionError
 from ..http.tls_router import TLSRouter
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 

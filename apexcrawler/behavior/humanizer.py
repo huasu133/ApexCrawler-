@@ -13,7 +13,6 @@ import asyncio
 import logging
 import math
 import random
-import time
 
 logger = logging.getLogger(__name__)
 

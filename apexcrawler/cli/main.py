@@ -588,7 +588,8 @@ async def _try_http_extract(url: str, hints: dict) -> dict | None:
     """Try lightweight HTTP extraction with curl_cffi."""
     try:
         import httpx
-    except ImportError:
+    except ImportError as e:
+        logger.warning(f"httpx import failed: {e}")
         return None
 
     # SSRF protection: validate URL before making request

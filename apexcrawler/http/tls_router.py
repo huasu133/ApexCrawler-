@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import random
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -59,21 +60,21 @@ class TLSRouter:
 
     def __init__(self, profiles: dict[str, TLSProfile] | None = None):
         self._profiles = profiles or PROFILES
-        self._idx = 0
+        self._cycle = itertools.cycle(self._profiles.keys())
 
     def get(self, name: str | None = None) -> TLSProfile:
         if name and name in self._profiles:
             return self._profiles[name]
-        keys = list(self._profiles.keys())
-        return self._profiles[keys[self._idx % len(keys)]]
+        key = next(self._cycle)
+        return self._profiles[key]
 
     def rotate(self, random_mode: bool = False) -> TLSProfile:
         keys = list(self._profiles.keys())
         if random_mode:
             profile = self._profiles[random.choice(keys)]
         else:
-            profile = self._profiles[keys[self._idx % len(keys)]]
-            self._idx += 1
+            key = next(self._cycle)
+            profile = self._profiles[key]
         return profile
 
     def validate_consistency(self, profile: TLSProfile) -> bool:

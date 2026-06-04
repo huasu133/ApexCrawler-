@@ -5,14 +5,11 @@ import asyncio
 import random
 import logging
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, TypeVar
+from typing import Awaitable, Callable
 from ..core.exceptions import NonRetryableError, RetryableError
 from ..core.context import PipelineContext
 
 logger = logging.getLogger(__name__)
-T = TypeVar("T")
-
-
 @dataclass
 class RetryPolicy:
     max_retries: int = 3
