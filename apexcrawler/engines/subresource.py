@@ -18,6 +18,7 @@ import fnmatch
 import logging
 import random
 from typing import Any
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -66,8 +67,12 @@ async def ensure_subresource_load(
 
     async def _router(route):
         url = route.request.url
+        parsed = urlparse(url)
+        # Extract domain + path for matching, avoiding query-string noise
+        host = parsed.netloc or ""
+        path = parsed.path or "/"
         for pattern in SKIP_PATTERNS:
-            if fnmatch.fnmatch(url, pattern):
+            if fnmatch.fnmatch(host, pattern) or fnmatch.fnmatch(path, pattern):
                 await route.abort()
                 return
         await route.continue_()
