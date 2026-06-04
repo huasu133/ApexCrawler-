@@ -101,20 +101,24 @@ def trim_html_for_llm(html: str, *, max_chars: int = 8000, strip_attrs: bool = T
 
 _PRICE_RE = re.compile(r"[\d,]+(?:\.\d{1,2})?")
 _CURRENCY_SYMBOLS: dict[str, str] = {
-    "$": "USD", "€": "EUR", "£": "GBP", "¥": "JPY",
+    "$": "USD", "€": "EUR", "£": "GBP", "¥": "CNY",
     "元": "CNY", "kr": "SEK", "₩": "KRW", "₹": "INR",
     "R$": "BRL", "A$": "AUD", "C$": "CAD", "₽": "RUB",
     "د.إ": "AED", "﷼": "SAR", "₫": "VND", "₱": "PHP",
     "NT$": "TWD", "HK$": "HKD", "S$": "SGD", "CHF": "CHF",
 }
 _CURRENCY_CODE_RE = re.compile(r"\b(USD|EUR|GBP|JPY|CNY|KRW|INR|BRL|AUD|CAD)\b")
+# Japanese indicators: .jp domain, 円 character, kana ranges
+_JP_INDICATOR_RE = re.compile(r"(\.jp\b|[ぁ-んァ-ン])")
 
 
-def clean_price(text: str) -> tuple[float | None, str]:
+def clean_price(text: str, *, context: str = "") -> tuple[float | None, str]:
     """Extract numeric price and currency from a raw price string.
 
     Args:
         text: Raw price string like "$19.99", "EUR 42.50", "1,299元".
+        context: Optional contextual text (e.g. page URL, surrounding HTML)
+                 used to disambiguate ¥ between CNY and JPY.
 
     Returns:
         Tuple of (float price or None, currency code defaulting to "USD").
@@ -133,11 +137,19 @@ def clean_price(text: str) -> tuple[float | None, str]:
 
     # Detect currency symbol
     if text:
+        has_yen = False
         for symbol, code in sorted(_CURRENCY_SYMBOLS.items(), key=lambda x: -len(x[0])):
             if text.startswith(symbol) or text.endswith(symbol):
+                if symbol == "¥":
+                    has_yen = True
                 currency = code
                 text = text.replace(symbol, "").strip()
                 break
+
+        # Disambiguate ¥: default CNY, only JPY if Japanese context detected
+        if has_yen and currency == "CNY" and context:
+            if _JP_INDICATOR_RE.search(context):
+                currency = "JPY"
 
     # Extract numeric value
     num_match = _PRICE_RE.search(text)
@@ -233,6 +245,13 @@ def clean_date(text: str) -> datetime | None:
 
 # ── URL Cleaning ───────────────────────────────────────────
 
+_TRACKING_PARAMS = frozenset({
+    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+    "fbclid", "gclid", "ref", "_ga", "gclsrc", "dclid", "msclkid",
+    "mc_cid", "mc_eid", "igshid",
+})
+
+
 def clean_url(url: str, *, base_url: str = "") -> str:
     """Normalize a URL: strip fragments, trailing slashes, tracking params.
 
@@ -246,7 +265,7 @@ def clean_url(url: str, *, base_url: str = "") -> str:
     if not url:
         return ""
 
-    from urllib.parse import urlparse, urljoin, urlunparse
+    from urllib.parse import urlparse, urljoin, urlunparse, parse_qs, urlencode
 
     # Resolve relative URLs
     if base_url and not url.startswith(("http://", "https://")):
@@ -254,13 +273,19 @@ def clean_url(url: str, *, base_url: str = "") -> str:
 
     parsed = urlparse(url)
 
+    # Strip tracking params from query string
+    query_params = parse_qs(parsed.query, keep_blank_values=True)
+    clean_params = {k: v for k, v in query_params.items()
+                    if k not in _TRACKING_PARAMS}
+    clean_query = urlencode(clean_params, doseq=True)
+
     # Reconstruct without fragment
     clean = urlunparse((
         parsed.scheme or "https",
         parsed.netloc.lower() if parsed.netloc else "",
         parsed.path.rstrip("/") or "/",
         parsed.params,
-        parsed.query,
+        clean_query,
         "",  # fragment
     ))
 
@@ -295,7 +320,10 @@ def clean_record(data: dict[str, Any]) -> dict[str, Any]:
             cleaned[key] = clean_date(value)
         elif "url" in kl or "link" in kl or kl.endswith("_href"):
             cleaned[key] = clean_url(value)
-        elif any(kw in kl for kw in ("text", "body", "description", "summary", "title")):
+        elif "title" in kl:
+            # Title fields: preserve raw text, no HTML stripping
+            cleaned[key] = clean_text(value, strip_html=False)
+        elif any(kw in kl for kw in ("text", "body", "description", "summary")):
             cleaned[key] = clean_text(value)
         else:
             cleaned[key] = clean_text(value) if len(value) > 2 else value

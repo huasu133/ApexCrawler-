@@ -63,6 +63,20 @@ class OCREngine:
         "day", "most", "us",
     })
 
+    # High-frequency Chinese characters for coherence scoring
+    _COMMON_CHINESE_WORDS: frozenset[str] = frozenset({
+        "的", "是", "在", "了", "不", "人", "我", "有", "他", "这",
+        "中", "大", "来", "上", "国", "个", "到", "说", "们", "为",
+        "子", "和", "你", "地", "出", "道", "也", "时", "年", "得",
+        "就", "那", "要", "下", "以", "生", "会", "自", "着", "去",
+        "之", "过", "家", "学", "对", "可", "她", "里", "后", "小",
+        "么", "心", "多", "天", "而", "能", "好", "都", "然", "没",
+        "日", "于", "起", "还", "发", "成", "事", "只", "作", "当",
+        "想", "看", "文", "无", "开", "手", "十", "用", "主", "行",
+        "方", "又", "如", "前", "所", "本", "见", "经", "头", "面",
+        "公", "同", "三", "已", "老", "从", "动", "两", "长", "知",
+    })
+
     def __init__(self, backend: str = "paddleocr", config: dict[str, Any] | None = None):
         """Initialize OCR engine.
 
@@ -105,22 +119,27 @@ class OCREngine:
         self._initialized = True
         logger.info(f"OCR backend initialized: {self._backend_name}")
 
-    async def recognize(self, image_bytes: bytes, *, language: str = "en") -> OCRResult:
+    async def recognize(self, image_bytes: bytes, *, language: str = "en",
+                         backend: str | None = None) -> OCRResult:
         """Recognize text from an image with confidence scoring.
 
         Args:
             image_bytes: PNG/JPEG image bytes.
             language: Language hint for the OCR engine.
+            backend: Override backend for this call (used by voting).
 
         Returns:
             OCRResult with recognized text and confidence scores.
         """
         import time
 
+        # Use backend override for this call (e.g. when voting)
+        effective_backend = backend or self._backend_name
+
         await self._init_backend()
         start = time.perf_counter()
 
-        raw_text, engine_conf = await self._run_ocr(image_bytes, language)
+        raw_text, engine_conf = await self._run_ocr(image_bytes, language, effective_backend)
         elapsed_ms = (time.perf_counter() - start) * 1000
 
         # Compute derived confidence scores
@@ -138,27 +157,45 @@ class OCREngine:
             engine_confidence=round(engine_conf, 4),
             coherence_score=round(coherence, 4),
             entropy_score=round(entropy, 4),
-            engine_name=self._backend_name,
+            engine_name=effective_backend,
             processing_time_ms=round(elapsed_ms, 2),
         )
 
-    async def _run_ocr(self, image_bytes: bytes, language: str) -> tuple[str, float]:
+    async def _run_ocr(self, image_bytes: bytes, language: str,
+                       backend_name: str | None = None) -> tuple[str, float]:
         """Run the actual OCR inference."""
-        if self._backend_name == "ddddocr":
+        bn = backend_name or self._backend_name
+        if bn == "ddddocr":
             import io
             from PIL import Image
 
             img = Image.open(io.BytesIO(image_bytes))
-            result = self._engine.classification(img_bytes=image_bytes)
+            if backend_name and backend_name != self._backend_name:
+                # Voting: create temporary engine
+                import ddddocr as _ddddocr
+                engine = _ddddocr.DdddOcr(show_ad=False)
+            else:
+                engine = self._engine
+            result = engine.classification(img_bytes=image_bytes)
             if isinstance(result, (list, tuple)):
                 text = "".join(str(r) for r in result) if result else ""
             else:
                 text = str(result) if result else ""
-            # ddddocr doesn't provide per-character confidence; estimate from text length
-            engine_conf = min(1.0, len(text) / max(1, 10)) if text else 0.0
+            # ddddocr doesn't provide per-character confidence.
+            # Check results against common character ranges instead of
+            # using a naive len(text)/10 estimate.
+            if text:
+                common = sum(1 for c in text if (
+                    ('a' <= c <= 'z') or ('A' <= c <= 'Z') or
+                    ('0' <= c <= '9') or ('\u4e00' <= c <= '\u9fff') or
+                    c in ' !@#$%^&*()_+-=[]{}|;:\'",.<>?/~`'
+                ))
+                engine_conf = common / max(1, len(text))
+            else:
+                engine_conf = 0.0
             return text, engine_conf
 
-        elif self._backend_name == "paddleocr":
+        elif bn == "paddleocr":
             import io
             import numpy as np
             from PIL import Image
@@ -166,7 +203,14 @@ class OCREngine:
             img = Image.open(io.BytesIO(image_bytes))
             img_array = np.array(img)
 
-            results = await asyncio.to_thread(self._engine.ocr, img_array, cls=True)
+            # Lazy-init PaddleOCR for voting calls
+            try:
+                from paddleocr import PaddleOCR
+            except ImportError:
+                raise ImportError("paddleocr not installed. Install with: pip install paddleocr")
+            paddle = PaddleOCR(use_angle_cls=True, lang="ch", show_log=False)
+
+            results = await asyncio.to_thread(paddle.ocr, img_array, cls=True)
             if not results or not results[0]:
                 return "", 0.0
 
@@ -181,7 +225,7 @@ class OCREngine:
             engine_conf = sum(confidences) / len(confidences) if confidences else 0.0
             return text, engine_conf
 
-        elif self._backend_name == "tesseract":
+        elif bn == "tesseract":
             import io
             from PIL import Image
 
@@ -209,6 +253,8 @@ class OCREngine:
         """Score text coherence by checking against common dictionary words.
 
         Higher score = more dictionary words, suggesting correct OCR output.
+        Uses Chinese dictionary when the text contains CJK characters,
+        English dictionary otherwise.
 
         Args:
             text: OCR output text.
@@ -219,12 +265,24 @@ class OCREngine:
         if not text or not text.strip():
             return 0.0
 
-        words = re.findall(r"[a-zA-Z]+", text.lower())
-        if not words:
-            return 0.0
+        # Detect Chinese text (any CJK unified ideograph range)
+        has_cjk = any('\u4e00' <= c <= '\u9fff' or '\u3400' <= c <= '\u4dbf'
+                      for c in text)
 
-        match_count = sum(1 for w in words if w in self._COMMON_WORDS)
-        return match_count / len(words)
+        if has_cjk:
+            # Chinese: extract individual characters
+            chars = [c for c in text if '\u4e00' <= c <= '\u9fff' or '\u3400' <= c <= '\u4dbf']
+            if not chars:
+                return 0.0
+            match_count = sum(1 for c in chars if c in self._COMMON_CHINESE_WORDS)
+            return match_count / len(chars)
+        else:
+            # English: extract words
+            words = re.findall(r"[a-zA-Z]+", text.lower())
+            if not words:
+                return 0.0
+            match_count = sum(1 for w in words if w in self._COMMON_WORDS)
+            return match_count / len(words)
 
     def _compute_entropy(self, text: str) -> float:
         """Compute normalized character distribution entropy.
@@ -279,6 +337,28 @@ class OCREngine:
             if result.confidence >= min_confidence:
                 results.append(result)
         return results
+
+    # ── Dual-Engine Voting ───────────────────────────────────
+
+    async def recognize_with_voting(self, image_bytes: bytes) -> OCRResult:
+        """Recognize text using both ddddocr and paddleocr, voting on result.
+
+        If both engines agree, return the result directly.
+        Otherwise, return the result with higher confidence.
+
+        Args:
+            image_bytes: PNG/JPEG image bytes.
+
+        Returns:
+            OCRResult with voted text and confidence.
+        """
+        r1 = await self.recognize(image_bytes, backend="ddddocr")
+        r2 = await self.recognize(image_bytes, backend="paddleocr")
+
+        if r1.text == r2.text:
+            return r1
+
+        return r1 if r1.confidence >= r2.confidence else r2
 
     # ── Glyph-to-Character Mapping ──────────────────────────
 

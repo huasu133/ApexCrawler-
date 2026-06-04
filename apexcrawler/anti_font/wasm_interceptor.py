@@ -34,6 +34,7 @@ WASM_INTERCEPTION_SCRIPT = """
 
         let wasmCount = 0;
         let simdCount = 0;
+        let warnings = [];
 
         // Detect SIMD opcodes (0xFD prefix) in the WASM code section only.
         // Scanning the entire binary produces false positives because 0xFD
@@ -69,71 +70,68 @@ WASM_INTERCEPTION_SCRIPT = """
             return false;
         }
 
-        // Wrap instantiate — block SIMD modules instead of corrupting them
+        // Wrap instantiate — warn on SIMD but allow execution (downgrade)
         WebAssembly.instantiate = function(bufferOrModule, imports) {
             wasmCount++;
             if (hasSIMD(bufferOrModule)) {
                 simdCount++;
-                console.warn('[ApexCrawler] WASM SIMD module blocked');
-                return Promise.reject(
-                    new Error('WebAssembly module with SIMD instructions blocked by ApexCrawler')
-                );
+                var msg = 'WASM module with SIMD instructions detected (downgraded)';
+                console.warn('[ApexCrawler] ' + msg);
+                warnings.push({type: 'simd_warn', timestamp: Date.now(), message: msg});
             }
             return origInstantiate.call(this, bufferOrModule, imports);
         };
 
-        // Wrap instantiateStreaming
+        // Wrap instantiateStreaming — warn on SIMD, continue (downgrade)
         WebAssembly.instantiateStreaming = function(source, imports) {
             wasmCount++;
             return source.then(function(response) {
                 return response.arrayBuffer().then(function(buffer) {
                     if (hasSIMD(buffer)) {
                         simdCount++;
-                        console.warn('[ApexCrawler] WASM SIMD module (streaming) blocked');
-                        return Promise.reject(
-                            new Error('WebAssembly module with SIMD instructions blocked by ApexCrawler')
-                        );
+                        var msg = 'WASM SIMD module (streaming) detected — downgraded, continuing';
+                        console.warn('[ApexCrawler] ' + msg);
+                        warnings.push({type: 'simd_streaming_warn', timestamp: Date.now(), message: msg});
                     }
                     return origInstantiate.call(WebAssembly, buffer, imports);
                 });
             });
         };
 
-        // Wrap compile
+        // Wrap compile — warn on SIMD, continue (downgrade)
         WebAssembly.compile = function(buffer) {
             wasmCount++;
             if (hasSIMD(buffer)) {
                 simdCount++;
-                console.warn('[ApexCrawler] WASM SIMD module compile blocked');
-                return Promise.reject(
-                    new Error('WebAssembly module with SIMD instructions blocked by ApexCrawler')
-                );
+                var msg = 'WASM SIMD module compile detected — downgraded, continuing';
+                console.warn('[ApexCrawler] ' + msg);
+                warnings.push({type: 'simd_compile_warn', timestamp: Date.now(), message: msg});
             }
             return origCompile.call(this, buffer);
         };
 
-        // Wrap compileStreaming
+        // Wrap compileStreaming — warn on SIMD, continue (downgrade)
         WebAssembly.compileStreaming = function(source) {
             wasmCount++;
             return source.then(function(response) {
                 return response.arrayBuffer().then(function(buffer) {
                     if (hasSIMD(buffer)) {
                         simdCount++;
-                        console.warn('[ApexCrawler] WASM SIMD module (streaming compile) blocked');
-                        return Promise.reject(
-                            new Error('WebAssembly module with SIMD instructions blocked by ApexCrawler')
-                        );
+                        var msg = 'WASM SIMD module (streaming compile) detected — downgraded, continuing';
+                        console.warn('[ApexCrawler] ' + msg);
+                        warnings.push({type: 'simd_compile_streaming_warn', timestamp: Date.now(), message: msg});
                     }
                     return origCompile.call(WebAssembly, buffer);
                 });
             });
         };
 
-        // Expose stats for Python layer
+        // Expose stats and warnings for Python layer
         window.__apex_wasm = {
             totalModules: function() { return wasmCount; },
             simdNeutralized: function() { return simdCount; },
-            stats: function() { return { total: wasmCount, simd: simdCount }; }
+            stats: function() { return { total: wasmCount, simd: simdCount }; },
+            warnings: function() { return warnings.slice(); }
         };
     }
 

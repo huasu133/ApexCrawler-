@@ -82,45 +82,108 @@ class DOMFixer:
 
     # ── Pseudo-element Content Injection ────────────────────
 
-    _PSEUDO_RULE_RE = re.compile(
-        r'(::?(?:before|after))\s*\{([^}]*)\}',
+    _PSEUDO_RULE_FULL_RE = re.compile(
+        r'([^{}]+::?(?:before|after))\s*\{([^}]*)\}',
         re.IGNORECASE | re.DOTALL,
     )
-    _CONTENT_PROP_RE = re.compile(
-        r'content\s*:\s*(?:"([^"]*)"|\'([^\']*)\'|attr\(([^)]+)\))',
-        re.IGNORECASE,
-    )
+    _PSEUDO_STRIP_RE = re.compile(r'::?(?:before|after)\s*$', re.IGNORECASE)
+    _CONTENT_PROP_RE = re.compile(r'content\s*:\s*["\']([^"\']*)["\']', re.IGNORECASE)
 
     def _inject_pseudo_content(self, html: str) -> str:
-        """Extract content from CSS ::before/::after rules and inject as hidden text nodes.
+        """Extract content from CSS ::before/::after rules and inject near target elements.
 
-        Some sites hide important text in pseudo-element content properties.
-        This detects them and injects hidden markers so extractors can find them.
+        Each pseudo-element's content is injected as a hidden span right after
+        the matching selector's element, instead of all at the </body> marker.
         """
         css_blocks = re.findall(r"<style[^>]*>(.*?)</style>", html, re.DOTALL | re.IGNORECASE)
         if not css_blocks:
             return html
 
-        pseudo_texts: list[str] = []
+        injections: list[tuple[str, str]] = []  # (plain_selector, content_text)
         for block in css_blocks:
-            for rule in self._PSEUDO_RULE_RE.finditer(block):
+            for rule in self._PSEUDO_RULE_FULL_RE.finditer(block):
+                full_selector = rule.group(1).strip()
                 body = rule.group(2)
                 content_match = self._CONTENT_PROP_RE.search(body)
-                if content_match:
-                    text = content_match.group(1) or content_match.group(2) or ""
-                    if text and text not in pseudo_texts:
-                        pseudo_texts.append(text)
+                if not content_match:
+                    continue
+                text = content_match.group(1) or content_match.group(2) or ""
+                if not text:
+                    continue
 
-        if pseudo_texts:
-            marker = "\n".join(
-                f'<span data-apex-pseudo-content="{text}" style="display:none">{text}</span>'
-                for text in pseudo_texts
-            )
-            body_close = html.rfind("</body>")
-            if body_close != -1:
-                html = html[:body_close] + marker + html[body_close:]
-            else:
-                html += marker
+                # Strip ::before/::after to get plain selector
+                plain_selector = self._PSEUDO_STRIP_RE.sub("", full_selector).strip()
+                if not plain_selector:
+                    continue
+
+                injections.append((plain_selector, text))
+
+        if not injections:
+            return html
+
+        # Inject each pseudo content after its target element
+        for selector, text in injections:
+            if (selector, text) in {(s, t) for s, t in injections
+                                    if injections.index((s, t)) != injections.index((selector, text))}:
+                continue  # skip duplicates
+
+        seen: set[tuple[str, str]] = set()
+        for selector, text in injections:
+            if (selector, text) in seen:
+                continue
+            seen.add((selector, text))
+
+            marker = f'<span data-apex-pseudo-content="{text}" style="display:none">{text}</span>'
+
+            # Simple: match by class or tag selector
+            # Handle .class selectors
+            if selector.startswith("."):
+                class_name = selector[1:].split(":")[0].strip()
+                if not class_name:
+                    continue
+                # Find elements with this class and inject after the last one
+                class_pat = re.compile(
+                    rf'(<[^>]*class\s*=\s*"[^"]*\b{class_name}\b[^"]*"[^>]*>)(.*?</[^>]+>)',
+                    re.DOTALL | re.IGNORECASE,
+                )
+                matches = list(class_pat.finditer(html))
+                if matches:
+                    # Inject after each matching opening tag
+                    result_parts = []
+                    last_end = 0
+                    for m in matches:
+                        result_parts.append(html[last_end:m.end(1)])
+                        result_parts.append(marker)
+                        last_end = m.end(1)
+                    result_parts.append(html[last_end:])
+                    html = "".join(result_parts)
+            elif selector.startswith("#"):
+                # ID selector: inject after element with matching id
+                id_name = selector[1:].split(":")[0].strip()
+                if not id_name:
+                    continue
+                id_pat = re.compile(
+                    rf'(<[^>]*\bid\s*=\s*["\']{id_name}["\'][^>]*>)(.*?</[^>]+>)',
+                    re.DOTALL | re.IGNORECASE,
+                )
+                matches = list(id_pat.finditer(html))
+                if matches:
+                    result_parts = []
+                    last_end = 0
+                    for m in matches:
+                        result_parts.append(html[last_end:m.end(1)])
+                        result_parts.append(marker)
+                        last_end = m.end(1)
+                    result_parts.append(html[last_end:])
+                    html = "".join(result_parts)
+            elif re.match(r'^[a-zA-Z][a-zA-Z0-9]*$', selector):
+                # Tag name selector: inject after each matching opening tag
+                tag_pat = re.compile(
+                    rf'(<{selector}\b[^>]*>)',
+                    re.IGNORECASE,
+                )
+                if tag_pat.search(html):
+                    html = tag_pat.sub(rf'\1{marker}', html)
 
         return html
 

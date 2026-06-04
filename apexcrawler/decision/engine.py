@@ -14,6 +14,8 @@ VENDOR_SIGNATURES = {
     "perimeterx": {"cookies": ["_px3", "_pxde", "_pxhd"]},
     "kasada": {"headers": ["x-kpsdk-ct", "x-kpsdk-cd"]},
     "f5_shape": {"cookies": ["reese84"]},
+    "imperva": {"cookies": ["incap_ses_"], "headers": ["x-cdn"]},
+    "distil": {"cookies": ["distil"], "headers": ["x-distil"]},
 }
 
 # Multi-engine switch signals — triggers browser fallback / engine rotation
@@ -25,6 +27,17 @@ SWITCH_SIGNALS = {
     "rate_limit": r"rate\.limit|too\.many\.requests|429",
     "waf_block": r"access\.denied|blocked|forbidden",
 }
+
+
+def _get_all_cookies(headers: dict) -> str:
+    """Collect all Set-Cookie header values (handles multi-value headers)."""
+    if hasattr(headers, "getall"):
+        return "; ".join(headers.getall("set-cookie", []))
+    parts = []
+    for key, value in headers.items():
+        if key.lower() == "set-cookie":
+            parts.append(str(value))
+    return "; ".join(parts)
 
 class DecisionEngine:
     """Three-tier decision engine: L0 rules → L1 local model → L2 API."""
@@ -90,17 +103,19 @@ class DecisionEngine:
     
     def _detect_vendor(self, html: str, headers: dict) -> str:
         """Detect anti-crawl vendor from headers/cookies/HTML."""
+        # Collect all Set-Cookie values (supports multi-value headers)
+        cookie_values = _get_all_cookies(headers)
+
         for vendor, sigs in VENDOR_SIGNATURES.items():
             for h in sigs.get("headers", []):
                 if any(k.lower() == h.lower() for k in headers):
                     return vendor
             for c in sigs.get("cookies", []):
-                if c.lower() in str(headers.get("set-cookie", "")).lower():
+                if c.lower() in cookie_values.lower():
                     return vendor
 
         # F5 Shape: regex match for TS cookie patterns (e.g. TSa1b2c3d4)
-        cookie_str = str(headers.get("set-cookie", "")).lower()
-        if re.search(r'TS[a-fA-F0-9]{6,}', cookie_str):
+        if re.search(r'TS[a-fA-F0-9]{6,}', cookie_values):
             return "f5_shape"
 
         return ""
@@ -113,6 +128,8 @@ class DecisionEngine:
             "perimeterx": "camoufox",
             "kasada": "cloaked",
             "f5_shape": "cloaked",
+            "imperva": "playwright",
+            "distil": "camoufox",
         }
         return engine_map.get(vendor, "cloaked")
 
