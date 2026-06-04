@@ -77,14 +77,15 @@ class MouseSimulator:
         self,
         target_x: float,
         target_y: float,
-        steps: int = 30,
+        steps: int | None = None,
         emulate: bool = True,
     ) -> None:
         """Move the mouse along a Bézier curve to (target_x, target_y).
 
         Args:
             target_x, target_y: Target coordinates.
-            steps: Number of interpolation steps (more = smoother).
+            steps: Number of interpolation steps (auto-calculated from
+                   distance if None; longer moves = more steps).
             emulate: If True and page is set, execute actual mouse moves.
         """
         start = self._position
@@ -92,6 +93,8 @@ class MouseSimulator:
         p0, p1, p2, p3 = _generate_bezier_control_points(start, end)
 
         distance = math.hypot(end[0] - start[0], end[1] - start[1])
+        if steps is None:
+            steps = max(5, min(60, int(distance / random.uniform(8, 20))))
         total_delay = _fitts_delay(distance)
         step_delay = total_delay / steps
 
@@ -118,13 +121,28 @@ class MouseSimulator:
         y: float | None = None,
         button: str = "left",
         emulate: bool = True,
+        element_type: str = "button",
     ) -> None:
-        """Move to a position (or stay) and click."""
+        """Move to a position (or stay) and click.
+
+        Hover duration varies by element type, matching real user
+        hesitation patterns.
+
+        Args:
+            element_type: "link" (fast hesitation), "button" (medium),
+                          or "input" (slow — user reads before typing).
+        """
         if x is not None and y is not None:
             await self.move_to(x, y, emulate=emulate)
 
-        # Human click delay: brief hover before click
-        await asyncio.sleep(random.uniform(0.08, 0.25))
+        # Human click delay: hover duration varies by element type
+        _HOVER_RANGES = {
+            "link": (0.05, 0.15),
+            "button": (0.08, 0.20),
+            "input": (0.15, 0.30),
+        }
+        lo, hi = _HOVER_RANGES.get(element_type, (0.08, 0.25))
+        await asyncio.sleep(random.uniform(lo, hi))
 
         if emulate and self._page:
             try:
@@ -175,13 +193,15 @@ class KeyboardSimulator:
         self._page = page
         self._typo_rate = typo_rate
         self._wpm_range = wpm
+        self._session_wpm = random.uniform(*self._wpm_range)
 
     def _char_delay(self) -> float:
-        """Random per-character delay based on WPM.
+        """Per-character delay with session-level WPM stability.
 
-        Average WPM: 40–70 → ~171–300 ms per character.
+        Session WPM stays stable (±5% jitter) rather than random
+        per-character, matching real user consistency.
         """
-        wpm = random.uniform(*self._wpm_range)
+        wpm = self._session_wpm * random.uniform(0.95, 1.05)
         chars_per_minute = wpm * 5  # standard: 5 chars per word
         return 60.0 / chars_per_minute
 
@@ -201,23 +221,42 @@ class KeyboardSimulator:
             emulate: If True and page is set, use actual keyboard input.
         """
         for i, char in enumerate(text):
-            # Typo simulation: type wrong adjacent key, then backspace
+            # Typo simulation — multiple correction modes
             if char.isalpha() and random.random() < self._typo_rate:
                 wrong_char = self._random_neighbor(char)
                 if wrong_char != char:
-                    if emulate and self._page:
-                        try:
-                            await self._page.keyboard.type(wrong_char)  # type: ignore
-                        except Exception:
-                            pass
-                    await asyncio.sleep(self._char_delay() * random.uniform(0.3, 0.7))
-                    # Correct the typo
-                    if emulate and self._page:
-                        try:
-                            await self._page.keyboard.press("Backspace")  # type: ignore
-                        except Exception:
-                            pass
-                    await asyncio.sleep(self._char_delay() * 0.5)
+                    mode = random.choices(
+                        ["backspace_once", "backspace_multi", "backspace_word", "ignore"],
+                        weights=[0.40, 0.15, 0.25, 0.20],
+                        k=1,
+                    )[0]
+
+                    # Type the wrong character(s)
+                    if mode != "ignore":
+                        chars_to_type = wrong_char
+                        if mode == "backspace_multi":
+                            chars_to_type += self._random_neighbor(wrong_char)
+                        elif mode == "backspace_word":
+                            chars_to_type += wrong_char + wrong_char
+                        if emulate and self._page:
+                            try:
+                                await self._page.keyboard.type(chars_to_type)  # type: ignore
+                            except Exception:
+                                pass
+                        await asyncio.sleep(self._char_delay() * random.uniform(0.3, 0.7))
+
+                        # Correct with backspaces
+                        backspace_count = len(chars_to_type)
+                        for _ in range(backspace_count):
+                            if emulate and self._page:
+                                try:
+                                    await self._page.keyboard.press("Backspace")  # type: ignore
+                                except Exception:
+                                    pass
+                            await asyncio.sleep(self._char_delay() * 0.3)
+                    else:
+                        # "ignore" mode: skip the typo, just pause briefly
+                        await asyncio.sleep(self._char_delay() * random.uniform(0.2, 0.5))
 
             # Type the actual character
             if emulate and self._page:
@@ -247,7 +286,11 @@ class ScrollSimulator:
         duration: float | None = None,
         emulate: bool = True,
     ) -> None:
-        """Scroll with human-like acceleration/deceleration pattern.
+        """Scroll with bursty wheel events mimicking human scanning.
+
+        Instead of uniform ease-in-out, this produces 2–5 frame bursts
+        of rapid wheel events separated by random pauses (reader
+        scanning, attention shifts).
 
         Args:
             direction: "up" or "down".
@@ -262,29 +305,31 @@ class ScrollSimulator:
 
         sign = -1 if direction == "down" else 1
         total_pixels = sign * distance
+        remaining = total_pixels
 
-        # Break scroll into micro-steps with pause probability
-        steps = random.randint(8, 20)
-        step_size = total_pixels / steps
+        while abs(remaining) > 0:
+            # Burst: 2–5 fast frames in quick succession
+            burst_frames = random.randint(2, 5)
+            burst_pixels = min(abs(remaining), random.randint(80, 250))
+            direction_sign = 1 if remaining > 0 else -1
+            per_frame = direction_sign * burst_pixels / burst_frames
 
-        for i in range(steps):
-            t = i / steps
-            # Ease-in-out for smooth motion
-            eased = _ease_in_out_cubic(t)
-            delta = int(step_size * (eased + 0.3))  # ensure non-zero
+            for _ in range(burst_frames):
+                delta = int(per_frame)
+                if delta == 0:
+                    continue
+                if emulate and self._page:
+                    try:
+                        await self._page.mouse.wheel(0, delta)  # type: ignore
+                    except Exception:
+                        pass
+                await asyncio.sleep(random.uniform(0.015, 0.04))
 
-            if emulate and self._page:
-                try:
-                    await self._page.mouse.wheel(0, delta)  # type: ignore
-                except Exception:
-                    pass
+            remaining -= direction_sign * burst_pixels
 
-            step_delay = duration / steps * random.uniform(0.8, 1.3)
-            await asyncio.sleep(step_delay)
-
-            # Occasional pause (reader scanning content)
-            if random.random() < 0.15:
-                await asyncio.sleep(random.uniform(0.3, 1.5))
+            # Random pause between bursts (reader scanning)
+            if abs(remaining) > 10:
+                await asyncio.sleep(random.uniform(0.2, 1.5))
 
     async def scroll_to_bottom(
         self,

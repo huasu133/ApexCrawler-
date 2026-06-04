@@ -55,14 +55,18 @@ def sample_scroll_depth() -> float:
     # Inverse-transform sampling from our empirical CDF
     r = random.random()
     cumulative = 0.0
+    _BUCKET_RANGES = {
+        "top_25": (0.0, 0.25),
+        "upper_mid": (0.25, 0.50),
+        "lower_mid": (0.50, 0.75),
+        "bottom_10": (0.75, 0.90),
+        "bottom": (0.90, 1.00),
+    }
     for prob, bucket in _SCROLL_DEPTH_BUCKETS:
         cumulative += prob
         if r <= cumulative:
-            # Map bucket to a uniform sub-range
-            idx = [b[1] for b in _SCROLL_DEPTH_BUCKETS].index(bucket)
-            start_frac = idx / len(_SCROLL_DEPTH_BUCKETS)
-            end_frac = (idx + 1) / len(_SCROLL_DEPTH_BUCKETS)
-            return random.uniform(start_frac, end_frac)
+            lo, hi = _BUCKET_RANGES[bucket]
+            return random.uniform(lo, hi)
     return 1.0
 
 

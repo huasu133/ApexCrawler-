@@ -46,8 +46,8 @@ PROFILES = {
         alpn=["h2", "http/1.1"],
         platform="Windows",
         accept_language="en-US,en;q=0.9",
-        sec_ch_ua='"Firefox";v="124"',
-        sec_ch_ua_platform='"Windows"',
+        sec_ch_ua="",
+        sec_ch_ua_platform="",
     ),
 }
 

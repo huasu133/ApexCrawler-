@@ -48,8 +48,10 @@ class DeviceProfile:
         errors = []
         if "Chrome" in self.user_agent and self.hardware_concurrency < 2:
             errors.append("Chrome UA but low hardwareConcurrency")
-        if "Win64" in self.user_agent and "NVIDIA" not in self.webgl_renderer:
-            errors.append("Win64 GPU mismatch")
+        if "Mac" in self.platform and "Apple" not in self.webgl_renderer and "Apple" not in self.webgl_vendor:
+            errors.append("macOS platform but non-Apple GPU")
+        if "Win64" in self.user_agent and "NVIDIA" not in self.webgl_renderer and "Intel" not in self.webgl_renderer and "AMD" not in self.webgl_renderer:
+            errors.append("Win64 but no known GPU vendor in renderer")
         return errors
 
     def cdp_inject_script(self) -> str:
@@ -64,6 +66,7 @@ class DeviceProfile:
         return f"""
 // ApexCrawler DeviceProfile fingerprint injection
 // Profile: {self.name}
+// Requires TZ=America/New_York or equivalent environment variable for timezone consistency
 (function() {{
 'use strict';
 
@@ -137,16 +140,39 @@ WebGLRenderingContext.prototype.getParameter = function(p) {{
 if (typeof WebGL2RenderingContext !== 'undefined') {{
     WebGL2RenderingContext.prototype.getParameter = WebGLRenderingContext.prototype.getParameter;
 }}
+// Block WEBGL_debug_renderer_info extension
+const origGetExtension = WebGLRenderingContext.prototype.getExtension;
+WebGLRenderingContext.prototype.getExtension = function(name) {{
+    if (name === 'WEBGL_debug_renderer_info') return null;
+    return origGetExtension.call(this, name);
+}};
+// OffscreenCanvas / Worker WebGL context
+if (typeof OffscreenCanvas !== 'undefined') {{
+    const origOffscreenGetContext = OffscreenCanvas.prototype.getContext;
+    OffscreenCanvas.prototype.getContext = function(type, opts) {{
+        const ctx = origOffscreenGetContext.call(this, type, opts);
+        if (ctx && (type === 'webgl' || type === 'webgl2')) {{
+            ctx.getParameter = WebGLRenderingContext.prototype.getParameter;
+            ctx.getExtension = WebGLRenderingContext.prototype.getExtension;
+        }}
+        return ctx;
+    }};
+}}
 
 // ── Layer 4: Canvas fingerprint seed ──
 const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
 const origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
 const canvasSeed = {canvas_seed};
+let state = canvasSeed;
+function pcgRandom() {{
+    state = (state * 6364136223846793005n + 1442695040888963407n) & 0xFFFFFFFFFFFFFFFFn;
+    return Number(state >> 33n) / 2147483648; // range [-1, 1]
+}}
 CanvasRenderingContext2D.prototype.getImageData = function(x, y, w, h) {{
     const data = origGetImageData.call(this, x, y, w, h);
-    // Add subtle noise based on seed (minimal visual impact)
+    // PCG-based nonlinear noise (avoids linear detectability)
     for (let i = 0; i < data.data.length; i += 4) {{
-        const noise = ((canvasSeed + i) % 3) - 1; // -1, 0, or +1
+        const noise = Math.round(pcgRandom() * 2 - 1); // -1, 0, or +1
         data.data[i] = Math.min(255, Math.max(0, data.data[i] + noise));
     }}
     return data;
@@ -168,6 +194,21 @@ if (typeof AudioContext !== 'undefined' || typeof webkitAudioContext !== 'undefi
         }};
         return osc;
     }};
+    // Override sampleRate, baseLatency, outputLatency, channelCount
+    const origGetProp = Object.getOwnPropertyDescriptor(AudioContext.prototype, 'sampleRate') ||
+                        Object.getOwnPropertyDescriptor(webkitAudioContext.prototype, 'sampleRate');
+    if (origGetProp) {{
+        Object.defineProperty(AC.prototype, 'sampleRate', {{
+            get: () => 44100, configurable: false
+        }});
+    }}
+    Object.defineProperty(AC.prototype, 'baseLatency', {{
+        get: () => 0.005 + (audioSeed % 20) / 10000, configurable: false
+    }});
+    Object.defineProperty(AC.prototype, 'outputLatency', {{
+        get: () => 0.01 + (audioSeed % 30) / 10000, configurable: false
+    }});
+    AC.prototype.destination.__defineGetter__('maxChannelCount', function() {{ return 2; }});
 }}
 
 // ── Layer 6: Timezone ──
@@ -214,6 +255,8 @@ DEVICE_PROFILES = [
             '"Google Chrome";v="124", "Chromium";v="124", "Not=A?Brand";v="24"'
         ),
         sec_ch_ua_platform='"macOS"',
+        webgl_renderer="ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
+        webgl_vendor="Google Inc. (Apple)",
         screen_w=1680,
         screen_h=1050,
         timezone="America/Los_Angeles",
@@ -229,8 +272,8 @@ DEVICE_PROFILES = [
         sec_ch_ua="",
         sec_ch_ua_platform="",
         vendor="",
-        webgl_renderer="Mozilla",
-        webgl_vendor="Mozilla",
+        webgl_renderer="ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0)",
+        webgl_vendor="Google Inc. (NVIDIA)",
         timezone="America/Chicago",
     ),
     DeviceProfile(

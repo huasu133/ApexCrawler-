@@ -61,7 +61,11 @@ class AIExtractor(Extractor[T]):
         prompt = self._build_prompt_v2(trimmed, schema)
         
         try:
-            response = await self._llm.generate(prompt, temperature=0)
+            response = await self._llm.generate(
+                prompt,
+                temperature=0,
+                response_format={"type": "json_object"},
+            )
             result = schema.model_validate_json(response)
             if self._cache:
                 try:
@@ -78,20 +82,22 @@ class AIExtractor(Extractor[T]):
 
         # JSON-LD
         for match in re.finditer(
-            r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
+            r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
             html, re.DOTALL,
         ):
             try:
                 data = json.loads(match.group(1))
                 if isinstance(data, list):
                     data = data[0] if data else {}
+                if isinstance(data, dict) and "@graph" in data:
+                    data = data["@graph"] if isinstance(data["@graph"], list) and data["@graph"] else data["@graph"]
                 return schema.model_validate(data)
             except Exception:
                 pass
 
         # OpenGraph meta tags
         og = {}
-        for m in re.finditer(r'<meta[^>]*property="og:(\w+)"[^>]*content="([^"]+)"', html):
+        for m in re.finditer(r'<meta[^>]*property="og:([\w-]+)"[^>]*content="([^"]+)"', html):
             og[m.group(1)] = m.group(2)
         if og:
             try:
@@ -116,13 +122,25 @@ class AIExtractor(Extractor[T]):
         fields = "\n".join(
             f"  {name}: {f.annotation}" for name, f in schema.model_fields.items()
         )
+        example = {}
+        for name, f in schema.model_fields.items():
+            ann = str(f.annotation)
+            if "str" in ann:
+                example[name] = f"示例{name}"
+            elif "float" in ann or "int" in ann:
+                example[name] = 0
+            elif "list" in ann:
+                example[name] = []
+            else:
+                example[name] = None
+
         return f"""Extract structured data from HTML.
 
 Schema:
 {fields}
 
 Example output:
-{{"title": "Product Name", "price": 19.99, "rating": 4.5}}
+{json.dumps(example, ensure_ascii=False)}
 
 Think step by step:
 1. What type of page is this?
@@ -146,4 +164,10 @@ Return ONLY valid JSON. Use null for missing fields."""
                 flags=re.DOTALL | re.IGNORECASE,
             )
         # Truncate to max_chars if needed
-        return html[:max_chars] if len(html) > max_chars else html
+        if len(html) > max_chars:
+            truncated = html[:max_chars]
+            last_tag_end = truncated.rfind('>')
+            if last_tag_end > 0:
+                truncated = truncated[:last_tag_end + 1]
+            return truncated
+        return html

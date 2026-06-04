@@ -56,11 +56,12 @@ class StealthProxy:
     connection pattern.
     """
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 8080) -> None:
+    def __init__(self, host: str = "127.0.0.1", port: int = 0) -> None:
         self._host = host
         self._port = port
         self._session: ClientSession | None = None
         self._runner: web.AppRunner | None = None
+        self._site: web.TCPSite | None = None
 
     @property
     def proxy_url(self) -> str:
@@ -81,7 +82,11 @@ class StealthProxy:
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
-        await web.TCPSite(self._runner, self._host, self._port).start()
+        self._site = web.TCPSite(self._runner, self._host, self._port)
+        await self._site.start()
+        # Capture the actual port assigned by the OS when port=0
+        if self._site._server and self._site._server.sockets:
+            self._port = self._site._server.sockets[0].getsockname()[1]
         logger.info("StealthProxy: %s", self.proxy_url)
 
     async def stop(self) -> None:
@@ -99,12 +104,21 @@ class StealthProxy:
         if self._session is None:
             return web.Response(status=503, text="Proxy not started")
 
+        # Filter hop-by-hop headers before forwarding
+        HOP_BY_HOP = {
+            "connection", "transfer-encoding", "upgrade",
+            "keep-alive", "proxy-authorization", "te",
+        }
         try:
             body = await request.read() if request.can_read_body else None
+            forwarded_headers = {
+                k: v for k, v in request.headers.items()
+                if k.lower() not in HOP_BY_HOP
+            }
             async with self._session.request(
                 method=request.method,
                 url=str(request.url),
-                headers=dict(request.headers),
+                headers=forwarded_headers,
                 data=body,
                 allow_redirects=True,
             ) as upstream:
@@ -140,20 +154,22 @@ class ConnectionReuseManager:
 
     def __init__(self) -> None:
         self._proxies: dict[str, StealthProxy] = {}
+        self._next_port: int = 8080
 
     async def get_proxy(self, url: str) -> str:
         """Return a proxy URL suitable for the given URL's origin.
 
         If a proxy for this origin already exists it is reused;
-        otherwise a new one is started.
+        otherwise a new one is started with an incremented port.
         """
         from yarl import URL
 
         origin = f"{URL(url).scheme}://{URL(url).host}"
         if origin not in self._proxies:
-            p = StealthProxy()
+            p = StealthProxy(port=self._next_port)
             await p.start()
             self._proxies[origin] = p
+            self._next_port += 1
         return self._proxies[origin].proxy_url
 
     async def close_all(self) -> None:
