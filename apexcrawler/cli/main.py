@@ -208,12 +208,17 @@ def crawl(
                     "schedule": StageConfig(timeout=10),
                 }
                 degrade_mgr = DegradeManager()
+                from ..plugins import PluginManager
+                from ..plugins.builtin import LoggingPlugin
+                plugin_mgr = PluginManager()
+                plugin_mgr.register(LoggingPlugin())
                 executor = PipelineExecutor(
                     stages, configs,
                     settings=settings,
                     session_manager=session_mgr,
                     rate_controller=rate_ctrl,
                     degrade_manager=degrade_mgr,
+                    plugin_manager=plugin_mgr,
                 )
                 ok, result = await executor.run(ctx_obj)
 

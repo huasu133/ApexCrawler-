@@ -28,12 +28,14 @@ class PipelineExecutor:
     """Async pipeline executor with retry, timeout, and rollback."""
 
     def __init__(self, stages: list, configs: dict[str, StageConfig] | None = None,
-                 settings=None, session_manager=None, rate_controller=None, degrade_manager=None):
+                 settings=None, session_manager=None, rate_controller=None, degrade_manager=None,
+                 plugin_manager=None):
         self._stages = stages
         self._configs = configs or {}
         self._session_mgr = session_manager
         self._rate_ctrl = rate_controller
         self._degrade_mgr = degrade_manager
+        self._plugin_mgr = plugin_manager
         # Merge stage_timeouts from Settings if provided
         if settings:
             pipeline_cfg = getattr(settings, 'pipeline', None)
@@ -46,9 +48,14 @@ class PipelineExecutor:
         """Run all stages sequentially. Returns (success, ctx).
 
         Integrates SessionManager for session tracking, RateController
-        for inter-stage pacing, and DegradeManager for engine degradation.
+        for inter-stage pacing, DegradeManager for engine degradation,
+        and PluginManager for lifecycle hooks.
         """
         executed = []
+
+        # Plugin hook: on_pre_schedule
+        if self._plugin_mgr:
+            await self._plugin_mgr.dispatch("on_pre_schedule", ctx)
 
         # SessionManager: bind engine for domain consistency
         if self._session_mgr and ctx.selected_engine:
@@ -77,6 +84,14 @@ class PipelineExecutor:
                 ctx = await self._execute_with_retry(stage, ctx, cfg)
                 executed.append(stage)
 
+                # Plugin hook: on_post_extract
+                if self._plugin_mgr and stage.name == "extract":
+                    await self._plugin_mgr.dispatch("on_post_extract", ctx)
+
+                # Plugin hook: on_pre_store
+                if self._plugin_mgr and stage.name == "validate":
+                    await self._plugin_mgr.dispatch("on_pre_store", ctx)
+
                 # RateController: feed signal based on stage result
                 if self._rate_ctrl:
                     if hasattr(ctx, 'raw_html') and ctx.raw_html and len(ctx.raw_html) > 0:
@@ -86,10 +101,14 @@ class PipelineExecutor:
                 await self._rollback(executed, ctx)
                 raise
             except NonRetryableError as e:
+                if self._plugin_mgr:
+                    await self._plugin_mgr.dispatch("on_error", ctx, e)
                 ctx.fatal_error = str(e)
                 await self._rollback(executed, ctx)
                 return False, ctx
             except RetryableError as e:
+                if self._plugin_mgr:
+                    await self._plugin_mgr.dispatch("on_error", ctx, e)
                 ctx.stage_errors.setdefault(stage.name, []).append(str(e))
                 if self._rate_ctrl and stage.name == "extract":
                     self._rate_ctrl.signal(status=429)
