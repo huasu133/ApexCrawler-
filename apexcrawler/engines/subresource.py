@@ -83,11 +83,15 @@ async def ensure_subresource_load(
 
     start = asyncio.get_event_loop().time()
     entries = 0
+    poll_failures = 0
     while (asyncio.get_event_loop().time() - start) * 1000 < max_wait_ms:
         try:
             entries = await page.evaluate("() => performance.getEntries().length")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Performance API poll failed: {e}")
+            poll_failures += 1
+            if poll_failures > 10:
+                break
         if entries >= policy["min_entries"]:
             break
         await asyncio.sleep(0.3)

@@ -624,7 +624,8 @@ async def _try_http_extract(url: str, hints: dict) -> dict | None:
                 headers=headers,
             )
             html = resp.text
-    except Exception:
+    except Exception as e:
+        logger.warning(f"template extraction failed: {e}")
         return None
 
     import re

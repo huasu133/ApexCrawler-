@@ -85,7 +85,7 @@ class StealthProxy:
         self._site = web.TCPSite(self._runner, self._host, self._port)
         await self._site.start()
         # Capture the actual port assigned by the OS when port=0
-        if self._site._server and self._site._server.sockets:
+        if self._site is not None and self._site._server is not None and self._site._server.sockets:
             self._port = self._site._server.sockets[0].getsockname()[1]
         logger.info("StealthProxy: %s", self.proxy_url)
 

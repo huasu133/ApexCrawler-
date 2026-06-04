@@ -112,6 +112,7 @@ class EvadeStage:
         self._router = router or TLSRouter()
         self._proxies = proxies or []
         self._proxy_idx = 0
+        self._proxy_lock = asyncio.Lock()
         if device_profile is None:
             from ..fingerprint.consistency import DEVICE_PROFILES
             self._device_profile = DEVICE_PROFILES[0]
@@ -134,8 +135,9 @@ class EvadeStage:
 
         # Assign proxy if available
         if self._proxies:
-            ctx.proxy = self._proxies[self._proxy_idx % len(self._proxies)]
-            self._proxy_idx += 1
+            async with self._proxy_lock:
+                ctx.proxy = self._proxies[self._proxy_idx % len(self._proxies)]
+                self._proxy_idx += 1
 
         # Fill device fingerprint attributes from DeviceProfile
         dp = self._device_profile

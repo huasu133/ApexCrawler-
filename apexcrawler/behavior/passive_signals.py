@@ -417,7 +417,8 @@ async def inject_dns_prefetch(
         except Exception:
             pass
 
-    asyncio.create_task(_warm())
+    task = asyncio.create_task(_warm())
+    task.add_done_callback(lambda t: logger.error(f"warm_up failed: {t.exception()}") if t.exception() else None)
     logger.debug("DNS prefetch: injected %d targets", len(targets))
 
 
