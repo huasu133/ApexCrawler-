@@ -46,12 +46,8 @@ class PipelineContext:
     canvas_hash: str = ""
     audio_fingerprint: str = ""
     fonts: list[str] = field(default_factory=list)
-    timing_profile: str = ""
-    passive_signals_enabled: bool = False
-
     # ── Extract stage outputs ──
     raw_html: str = ""
-    markdown: str = ""
     extracted_data: dict | None = None
     extraction_confidence: float = 0.0
 

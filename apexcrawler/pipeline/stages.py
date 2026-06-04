@@ -351,7 +351,6 @@ class ExtractStage:
 
     async def rollback(self, ctx: PipelineContext) -> None:
         ctx.raw_html = ""
-        ctx.markdown = ""
         ctx.extracted_data = None
         ctx.extraction_confidence = 0.0
 

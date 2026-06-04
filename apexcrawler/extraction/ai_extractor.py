@@ -42,8 +42,8 @@ class AIExtractor(Extractor[T]):
                 if cached:
                     data = json.loads(cached)
                     return schema.model_validate(data)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Cache read failed for key {cache_key}: {e}")
 
         # Step 1: structured data first (zero LLM cost)
         try:
@@ -51,8 +51,8 @@ class AIExtractor(Extractor[T]):
             if self._cache:
                 try:
                     await self._cache.set(cache_key, json.dumps(result.model_dump()).encode(), ttl=3600)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Cache write failed for key {cache_key}: {e}")
             return result
         except ExtractionError:
             pass
@@ -70,8 +70,8 @@ class AIExtractor(Extractor[T]):
             if self._cache:
                 try:
                     await self._cache.set(cache_key, json.dumps(result.model_dump()).encode(), ttl=3600)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Cache write failed for key {cache_key}: {e}")
             return result
         except Exception as e:
             raise ExtractionError(detail=str(e))
@@ -92,8 +92,8 @@ class AIExtractor(Extractor[T]):
                 if isinstance(data, dict) and "@graph" in data:
                     data = data["@graph"] if isinstance(data["@graph"], list) and data["@graph"] else data["@graph"]
                 return schema.model_validate(data)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"JSON-LD parsing failed: {e}")
 
         # OpenGraph meta tags
         og = {}
@@ -102,8 +102,8 @@ class AIExtractor(Extractor[T]):
         if og:
             try:
                 return schema.model_validate(og)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"OpenGraph parsing failed: {e}")
 
         # Twitter Card meta tags
         tc = {}
@@ -112,8 +112,8 @@ class AIExtractor(Extractor[T]):
         if tc:
             try:
                 return schema.model_validate(tc)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Twitter Card parsing failed: {e}")
 
         raise ExtractionError("No structured data found")
 

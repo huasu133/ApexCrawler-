@@ -145,7 +145,8 @@ Respond with JSON only:
                 "confidence": data.get("confidence", 0.5),
                 "reason": data.get("reason", "L1 prediction"),
             }
-        except Exception:
+        except Exception as e:
+            logger.warning(f"L1 model failed: {e}")
             return None
     
     def _detect_vendor(self, html: str, headers: dict) -> str:
