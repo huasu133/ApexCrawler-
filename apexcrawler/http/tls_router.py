@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
+from types import MappingProxyType
 
 
 @dataclass
@@ -18,7 +20,7 @@ class TLSProfile:
 
 
 # Pre-configured profiles
-PROFILES = {
+PROFILES = MappingProxyType({
     "chrome_124": TLSProfile(
         name="chrome_124",
         ua="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -49,7 +51,7 @@ PROFILES = {
         sec_ch_ua="",
         sec_ch_ua_platform="",
     ),
-}
+})
 
 
 class TLSRouter:
@@ -65,10 +67,13 @@ class TLSRouter:
         keys = list(self._profiles.keys())
         return self._profiles[keys[self._idx % len(keys)]]
 
-    def rotate(self) -> TLSProfile:
+    def rotate(self, random_mode: bool = False) -> TLSProfile:
         keys = list(self._profiles.keys())
-        profile = self._profiles[keys[self._idx % len(keys)]]
-        self._idx += 1
+        if random_mode:
+            profile = self._profiles[random.choice(keys)]
+        else:
+            profile = self._profiles[keys[self._idx % len(keys)]]
+            self._idx += 1
         return profile
 
     def validate_consistency(self, profile: TLSProfile) -> bool:

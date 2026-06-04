@@ -15,6 +15,7 @@ from apexcrawler.core.exceptions import EngineError
 from apexcrawler.core.protocols import Page
 from apexcrawler.engines.base import BaseEngine, EngineCapability
 from apexcrawler.engines.subresource import ensure_subresource_load
+from apexcrawler.fingerprint.consistency import DeviceProfile
 from apexcrawler.routing.registry import EngineRegistry
 
 logger = logging.getLogger(__name__)
@@ -29,9 +30,11 @@ class VanillaEngine(BaseEngine):
     or local development.
     """
 
-    def __init__(self, headless: bool = True, viewport: dict | None = None) -> None:
+    def __init__(self, headless: bool = True, viewport: dict | None = None,
+                 profile: DeviceProfile | None = None) -> None:
         self._headless = headless
         self._viewport = viewport or {"width": 1920, "height": 1080}
+        self._profile = profile or DeviceProfile(name="default")
         self._playwright = None
         self._browser = None
         self._context = None
@@ -58,6 +61,7 @@ class VanillaEngine(BaseEngine):
             )
             self._context = await self._browser.new_context(
                 viewport=self._viewport,
+                user_agent=self._profile.user_agent,
             )
             self._running = True
         except Exception as exc:
@@ -78,6 +82,7 @@ class VanillaEngine(BaseEngine):
             self._context = await self._browser.new_context(
                 viewport=self._viewport,
                 proxy={"server": proxy},
+                user_agent=self._profile.user_agent,
             )
             page = await self._context.new_page()
         else:

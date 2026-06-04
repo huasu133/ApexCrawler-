@@ -106,7 +106,7 @@ def sample_mouse_zone(
         y = random.uniform(20, viewport_h * 0.15)
     elif zone == "content":
         # Middle area — article body, product listings
-        x = random.uniform(100, viewport_w * 0.75)
+        x = random.uniform(10, viewport_w * 0.75)
         y = random.uniform(viewport_h * 0.18, viewport_h * 0.78)
     elif zone == "sidebar":
         # Right side — scrollbar, side widgets, ads

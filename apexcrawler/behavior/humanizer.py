@@ -65,9 +65,10 @@ def _generate_bezier_control_points(
 class MouseSimulator:
     """Simulates human-like mouse movements using Bézier curves and Fitts' law."""
 
-    def __init__(self, page: object | None = None):
+    def __init__(self, page: object | None = None, session: object | None = None):
         self._page = page
         self._position: tuple[float, float] = (400.0, 300.0)
+        self._session = session
 
     def set_position(self, x: float, y: float) -> None:
         """Set the virtual mouse position (e.g., after a warm-up)."""
@@ -96,6 +97,15 @@ class MouseSimulator:
         if steps is None:
             steps = max(5, min(60, int(distance / random.uniform(8, 20))))
         total_delay = _fitts_delay(distance)
+
+        # Apply session-level mouse speed decay (fatigue)
+        if self._session is not None:
+            try:
+                session_speed = self._session.get_mouse_speed()  # type: ignore
+                total_delay *= (1000.0 / max(200.0, session_speed))
+            except Exception:
+                pass
+
         step_delay = total_delay / steps
 
         for i in range(1, steps + 1):
@@ -386,6 +396,10 @@ class Humanizer:
             page, viewport_w=viewport_w, viewport_h=viewport_h
         )
         self._session = session or self._passive.session  # SessionBehavior for cross-page consistency
+
+        # Wire session into mouse simulator for speed decay
+        if self._session is not None:
+            self.mouse._session = self._session
 
     async def warm_up(
         self,

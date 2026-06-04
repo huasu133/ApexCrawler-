@@ -72,6 +72,7 @@ def content_dwell_time(
     page_size_kb: float = 100.0,
     text_length: int = 2000,
     image_count: int = 5,
+    page_type: str = "article",
 ) -> float:
     """Estimate human dwell time using a lognormal distribution.
 
@@ -80,6 +81,9 @@ def content_dwell_time(
     - **page_size_kb**: total transferred bytes.
     - **text_length**: approximate character count.
     - **image_count**: number of ``<img>`` tags.
+    - **page_type**: "category" (listing, sigma=0.25),
+      "product" (detail, sigma=0.4),
+      "article" (long-form, sigma=0.5).
 
     Returns dwell time in seconds.
 
@@ -105,11 +109,17 @@ def content_dwell_time(
     # Clip to reasonable bounds (2s minimum, 5min maximum)
     median = max(2.0, min(300.0, median))
 
-    # Lognormal parameters: sigma ≈ 0.5 gives right-skewed distribution
-    # where most values cluster near the median but occasional long
-    # dwells occur (user got distracted, read carefully, etc.)
+    # Lognormal parameters: sigma varies by page type
+    # - Category listing: tight distribution (quick scanning)
+    # - Product detail: moderate variance
+    # - Long article: wide distribution (read speeds vary)
+    _SIGMA_BY_TYPE = {
+        "category": 0.25,
+        "product": 0.40,
+        "article": 0.50,
+    }
     mu = math.log(median)
-    sigma = 0.5
+    sigma = _SIGMA_BY_TYPE.get(page_type, 0.50)
     return random.lognormvariate(mu, sigma)
 
 

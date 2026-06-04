@@ -112,6 +112,10 @@ class PatchedEngine(BaseEngine):
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
+                "--disable-features=IsolateOrigins,site-per-process",
+                "--disable-features=TranslateUI",
+                "--mute-audio",
+                "--disable-component-extensions-with-background-pages",
             ],
         }
         if self._executable:
@@ -182,6 +186,14 @@ class _PageAdapter:
     @property
     def url(self) -> str:
         return self._page.url
+
+    @property
+    def keyboard(self):
+        return self._page.keyboard
+
+    @property
+    def mouse(self):
+        return self._page.mouse
 
     async def evaluate(self, script: str):
         return await self._page.evaluate(script)
