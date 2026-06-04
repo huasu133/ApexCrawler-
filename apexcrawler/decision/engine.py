@@ -1,8 +1,9 @@
 """LLM-based adaptive decision engine with three-tier caching."""
 
 from __future__ import annotations
-import logging, re, time
+import json, logging, re, time
 from typing import Any
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +43,10 @@ def _get_all_cookies(headers: dict) -> str:
 class DecisionEngine:
     """Three-tier decision engine: L0 rules → L1 local model → L2 API."""
     
-    def __init__(self, cache_backend=None, llm_client=None):
+    def __init__(self, cache_backend=None, llm_client=None, l1_model=None):
         self._cache = cache_backend
         self._llm = llm_client
+        self._l1_model = l1_model  # Ollama client or None
         self._decision_cache: dict[str, tuple[float, dict]] = {}
     
     async def analyze(self, html: str, headers: dict, status: int) -> dict[str, Any]:
@@ -90,7 +92,17 @@ class DecisionEngine:
             if time.monotonic() - ts < 300:
                 return result
         
-        # Default: start with HTTP layer
+        # L1: local model pre-flight
+        if self._l1_model:
+            try:
+                l1_result = await self._run_l1(url)
+                if l1_result:
+                    self._decision_cache[cache_key] = (time.monotonic(), l1_result)
+                    return l1_result
+            except Exception as e:
+                logger.warning(f"L1 model failed, falling back to L2: {e}")
+        
+        # L2: default / API-based
         result = {
             "entry_point": "http",
             "tls_profile": "chrome_124",
@@ -100,6 +112,41 @@ class DecisionEngine:
         
         self._decision_cache[cache_key] = (time.monotonic(), result)
         return result
+    
+    async def _run_l1(self, url: str) -> dict | None:
+        """L1: Use local Ollama model to predict difficulty and engine.
+        
+        Returns None if model is unavailable or confidence is too low.
+        """
+        domain = urlparse(url).netloc
+        
+        prompt = f"""Classify this website for web scraping difficulty. Domain: {domain}
+        
+Respond with JSON only:
+{{"difficulty": "low|medium|high", "likely_engine": "httpx|playwright|camoufox|cloaked", "confidence": 0.0-1.0, "reason": "brief"}}"""
+        
+        try:
+            response = await self._l1_model.generate(prompt, max_tokens=150)
+            data = json.loads(response)
+            if data.get("confidence", 0) < 0.5:
+                return None
+            
+            engine_map = {
+                "httpx": "http",
+                "playwright": "playwright", 
+                "camoufox": "camoufox",
+                "cloaked": "cloaked",
+            }
+            
+            return {
+                "entry_point": engine_map.get(data.get("likely_engine", "httpx"), "http"),
+                "tls_profile": "chrome_124",
+                "use_browser": data.get("difficulty") in ("medium", "high"),
+                "confidence": data.get("confidence", 0.5),
+                "reason": data.get("reason", "L1 prediction"),
+            }
+        except Exception:
+            return None
     
     def _detect_vendor(self, html: str, headers: dict) -> str:
         """Detect anti-crawl vendor from headers/cookies/HTML."""
