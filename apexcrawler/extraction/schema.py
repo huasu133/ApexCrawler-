@@ -7,7 +7,7 @@ products, articles, search results, reviews, and company data.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -17,7 +17,7 @@ class ProductVariant(BaseModel):
     """Product variant: size, color, SKU variation."""
     name: str = ""
     sku: str = ""
-    price: float | None = None
+    price: Optional[float] = None
     currency: str = "USD"
     availability: bool = True
     attributes: dict[str, str] = Field(default_factory=dict)
@@ -27,9 +27,9 @@ class Product(BaseModel):
     """E-commerce product listing."""
     title: str
     description: str = ""
-    price: float | None = None
+    price: Optional[float] = None
     currency: str = "USD"
-    original_price: float | None = None
+    original_price: Optional[float] = None
     currency_original: str = "USD"
     brand: str = ""
     category: str = ""
@@ -38,7 +38,7 @@ class Product(BaseModel):
     mpn: str = ""
     gtin: str = ""
     availability: str = ""  # "InStock", "OutOfStock", "PreOrder"
-    rating: float | None = None
+    rating: Optional[float] = None
     review_count: int = 0
     image_urls: list[str] = Field(default_factory=list)
     product_url: str = ""
@@ -49,7 +49,7 @@ class Product(BaseModel):
 
     @field_validator("rating")
     @classmethod
-    def clamp_rating(cls, v: float | None) -> float | None:
+    def clamp_rating(cls, v: Optional[float]) -> Optional[float]:
         if v is not None:
             return max(0.0, min(5.0, round(v, 1)))
         return v
@@ -61,8 +61,8 @@ class Article(BaseModel):
     """News article or blog post."""
     headline: str = Field(description="Title or headline of the article")
     author: str = ""
-    published_date: datetime | None = None
-    modified_date: datetime | None = None
+    published_date: Optional[datetime] = None
+    modified_date: Optional[datetime] = None
     body_text: str = ""
     summary: str = ""
     category: str = ""
@@ -107,7 +107,7 @@ class Review(BaseModel):
     body: str
     rating: float = 0.0
     author: str = ""
-    date: datetime | None = None
+    date: Optional[datetime] = None
     verified_purchase: bool = False
     helpful_count: int = 0
     images: list[str] = Field(default_factory=list)
@@ -138,8 +138,8 @@ class Company(BaseModel):
     website: str = ""
     industry: str = ""
     headquarters: str = ""
-    founded: int | None = None
-    employee_count: int | None = None
+    founded: Optional[int] = None
+    employee_count: Optional[int] = None
     annual_revenue: str = ""
     description: str = ""
     linkedin_url: str = ""

@@ -421,7 +421,7 @@ class StoreStage:
 
 
 class FontDecodeStage:
-    """Decodes font-encoded text using FontCracker + OCREngine + DomFixer.
+    """Decodes font-encoded text using FontCracker + OCREngine + DOMFixer.
 
     Runs after extraction to decode any font-obfuscated content (e.g. 58同城, 猫扑).
     Falls back through FontTools → OCR → shape matching.
@@ -432,10 +432,10 @@ class FontDecodeStage:
     def __init__(self, font_cracker=None, ocr_engine=None, dom_fixer=None):
         from ..anti_font.font_cracker import FontCracker as FC
         from ..anti_font.ocr_engine import OCREngine
-        from ..anti_font.dom_fixer import DomFixer
+        from ..anti_font.dom_fixer import DOMFixer
         self._cracker = font_cracker or FC()
         self._ocr = ocr_engine or OCREngine()
-        self._fixer = dom_fixer or DomFixer()
+        self._fixer = dom_fixer or DOMFixer()
 
     async def execute(self, ctx: PipelineContext) -> PipelineContext:
         if not ctx.raw_html or "@font-face" not in ctx.raw_html:
