@@ -510,4 +510,4 @@ class _DefaultEngineMatcher:
             if keyword in url_lower:
                 return _MatchResult(engine=engine, reason=f"matched '{keyword}'", difficulty=difficulty)
         # Default fallback
-        return _MatchResult(engine="httpx", reason="default", difficulty=1)
+        return _MatchResult(engine="vanilla", reason="default", difficulty=1)

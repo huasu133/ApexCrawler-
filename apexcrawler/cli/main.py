@@ -222,7 +222,7 @@ def crawl(
                     EvadeStage(router=tls_router, proxies=[proxy_url] if proxy_url else []),
                     ExtractStage(
                         engine_factory=engine_pool,
-                        conn_manager=conn_mgr,
+                        conn_manager=None,  # StealthProxy 未就绪，暂不使用代理
                     ),
                     ValidateStage(),
                     FontDecodeStage(),
