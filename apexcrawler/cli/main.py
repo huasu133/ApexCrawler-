@@ -605,17 +605,97 @@ def ask(ctx: click.Context, query: str, output: str | None, live: bool) -> None:
 
             return extracted
 
-        # Phase 2: HTTP failed, try browser
-        click.echo(f"  🌐 HTTP 层提取不足，启动浏览器 ({engine})...")
-        # TODO: Full browser pipeline integration
-        click.echo(f"  ℹ️  浏览器管线集成开发中，当前返回页面概览")
+        # Phase 2: HTTP failed, try browser pipeline
+        click.echo(f"  🌐 启动浏览器管线 ({engine})...")
 
-        elapsed = time.monotonic() - start
-        click.secho(f"\n✅ 分析完成 ({elapsed:.1f}s)", fg="green", bold=True)
-        click.echo("─" * 50)
-        click.echo(f"  Trace: {ctx_obj.trace_id}")
-        click.echo(f"  提示: 使用 'apex visual {url}' 可视化点选精确字段")
-        return {}
+        # Build pipeline stages
+        from ..pipeline.stages import (
+            ScheduleStage, RouteStage, EvadeStage,
+            ExtractStage, ValidateStage, FontDecodeStage, StoreStage,
+        )
+        from ..pipeline.core import PipelineExecutor, StageConfig, RetryPolicy
+        from ..behavior.timing import TimingScheduler
+        from ..pipeline.session_manager import SessionManager
+        from ..pipeline.rate_controller import RateController
+        from ..http.connection_pool import ConnectionReuseManager
+        from ..http.tls_router import TLSRouter
+        from ..pipeline.degrade import DegradeManager
+        from ..engines.pool import EnginePool
+        from ..engines import vanilla, cloaked, camouflaged, patched
+
+        timing = TimingScheduler()
+        session_mgr = SessionManager()
+        rate_ctrl = RateController()
+        conn_mgr = ConnectionReuseManager()
+        tls_router = TLSRouter()
+        engine_pool = EnginePool()
+
+        stages = [
+            ScheduleStage(timing=timing),
+            RouteStage(),
+            EvadeStage(router=tls_router),
+            ExtractStage(
+                engine_factory=engine_pool,
+                conn_manager=None,
+            ),
+            ValidateStage(),
+            FontDecodeStage(),
+            StoreStage(),
+        ]
+
+        configs = {
+            "extract": StageConfig(timeout=30, retry=RetryPolicy(max_retries=2)),
+            "schedule": StageConfig(timeout=10, retry=RetryPolicy(max_retries=0)),
+        }
+
+        degrade_mgr = DegradeManager()
+        from ..plugins import PluginManager
+        from ..plugins.builtin import LoggingPlugin
+        plugin_mgr = PluginManager()
+        plugin_mgr.register(LoggingPlugin())
+
+        # 设置 pipeline context
+        from ..core.context import PipelineContext
+        from ..extraction.schema import get_schema
+        schema = get_schema(hints.get('template', 'generic') or 'generic')
+        ctx_obj = PipelineContext(
+            target_url=url,
+            extraction_schema=schema,
+            selected_engine=engine,
+        )
+
+        # 清除系统代理
+        import os
+        for _k in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']:
+            os.environ.pop(_k, None)
+
+        executor = PipelineExecutor(
+            stages, configs,
+            settings=None,
+            session_manager=session_mgr,
+            rate_controller=rate_ctrl,
+            degrade_manager=degrade_mgr,
+            plugin_manager=plugin_mgr,
+        )
+
+        ok, result_ctx = await executor.run(ctx_obj)
+
+        if ok and result_ctx.raw_html:
+            click.echo(f"  pipeline OK, html={len(result_ctx.raw_html)}B")
+            # 使用提取的数据
+            if hints.get('detected_fields'):
+                from ..extraction.ai_extractor import AIExtractor
+                extractor = AIExtractor()
+                extracted = extractor.extract_structured(result_ctx.raw_html)
+                # 也尝试 LLM
+                llm_result = await extractor._try_llm(result_ctx.raw_html, hints['detected_fields'], url)
+                if llm_result:
+                    extracted.update({k:v for k,v in llm_result.items() if v})
+                return extracted
+            return {"html_bytes": len(result_ctx.raw_html)}
+        else:
+            click.echo(f"  pipeline failed: {result_ctx.fatal_error or 'unknown'}")
+            return {}
 
     asyncio.run(_run())
 
