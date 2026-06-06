@@ -202,7 +202,7 @@ def crawl(
 
                 # 清除系统代理，防止干扰爬取请求
                 import os
-                for _k in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']:
+                for _k in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']:
                     os.environ.pop(_k, None)
                 if not ctx_obj.selected_engine:
                     ctx_obj.selected_engine = "vanilla"

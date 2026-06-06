@@ -76,7 +76,7 @@ class MobileAPISniffer:
 
         from apexcrawler.utils.dns_cache import dns_cache
 
-        async with httpx.AsyncClient(timeout=5, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=5, follow_redirects=True, proxy={"http://": None, "https://": None}) as client:
             for candidate in candidates:
                 try:
                     # DNS cache: resolve host to IP for faster connection

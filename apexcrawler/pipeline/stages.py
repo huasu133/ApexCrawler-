@@ -286,7 +286,7 @@ class ExtractStage:
 
             async with httpx.AsyncClient(
                 timeout=15, follow_redirects=True,
-                proxy=proxy, headers=headers,
+                proxy={"http://": None, "https://": None}, headers=headers,
             ) as c:
                 r = await c.get(target_url)
                 ctx._last_status = r.status_code

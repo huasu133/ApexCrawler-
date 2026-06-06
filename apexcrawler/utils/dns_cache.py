@@ -25,10 +25,10 @@ class DNSCache:
             self._cache[host] = (ip, time.monotonic())
             return ip
         except socket.gaierror:
-            logger.warning("DNS 解析失败: %s", host)
+            logger.debug("DNS 解析失败: %s", host)
             return host
         except socket.timeout:
-            logger.warning("DNS 超时: %s", host)
+            logger.debug("DNS 超时: %s", host)
             return host
         except Exception:
             logger.error("DNS 解析异常: %s\n%s", host, traceback.format_exc())

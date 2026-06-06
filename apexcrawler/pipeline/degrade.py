@@ -122,9 +122,9 @@ class DegradeManager:
         API → HTTP → Browser chain.
         """
         _DEGRADE_CHAIN = {
-            "": "httpx",
-            "api": "httpx",
-            "httpx": "playwright",
+            "": "vanilla",
+            "api": "vanilla",
+            "vanilla": "playwright",
             "playwright": "camoufox",
             "camoufox": "cloaked",
         }
