@@ -196,6 +196,17 @@ def crawl(
                 if engine_name:
                     ctx_obj.selected_engine = engine_name
 
+                # 未指定引擎时默认用 vanilla (Playwright)
+                if not ctx_obj.selected_engine:
+                    ctx_obj.selected_engine = "vanilla"
+
+                # 清除系统代理，防止干扰爬取请求
+                import os
+                for _k in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']:
+                    os.environ.pop(_k, None)
+                if not ctx_obj.selected_engine:
+                    ctx_obj.selected_engine = "vanilla"
+
                 # Build pipeline stages
                 timing = TimingScheduler()
                 if fast:
