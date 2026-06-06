@@ -57,24 +57,41 @@ class AIExtractor(Extractor[T]):
         except ExtractionError:
             pass
         # Step 2: LLM with smart trim and improved prompt
-        trimmed = self._semantic_trim(html)
-        prompt = self._build_prompt_v2(trimmed, schema)
-        
-        try:
-            response = await self._llm.generate(
-                prompt,
-                temperature=0,
-                response_format={"type": "json_object"},
-            )
-            result = schema.model_validate_json(response)
-            if self._cache:
-                try:
-                    await self._cache.set(cache_key, json.dumps(result.model_dump()).encode(), ttl=3600)
-                except Exception as e:
-                    logger.debug(f"Cache write failed for key {cache_key}: {e}")
-            return result
-        except Exception as e:
-            raise ExtractionError(detail=str(e))
+        fields = list(schema.model_fields.keys())
+        llm_result = await self._try_llm(html, fields)
+        if llm_result:
+            try:
+                result = schema.model_validate(llm_result)
+                if self._cache:
+                    try:
+                        await self._cache.set(cache_key, json.dumps(result.model_dump()).encode(), ttl=3600)
+                    except Exception as e:
+                        logger.debug(f"Cache write failed for key {cache_key}: {e}")
+                return result
+            except Exception as e:
+                logger.debug(f"LLM result schema validation failed: {e}")
+
+        # Step 3: legacy LLM path (for injected llm_client)
+        if self._llm:
+            trimmed = self._semantic_trim(html)
+            prompt = self._build_prompt_v2(trimmed, schema)
+            try:
+                response = await self._llm.generate(
+                    prompt,
+                    temperature=0,
+                    response_format={"type": "json_object"},
+                )
+                result = schema.model_validate_json(response)
+                if self._cache:
+                    try:
+                        await self._cache.set(cache_key, json.dumps(result.model_dump()).encode(), ttl=3600)
+                    except Exception as e:
+                        logger.debug(f"Cache write failed for key {cache_key}: {e}")
+                return result
+            except Exception as e:
+                raise ExtractionError(detail=str(e))
+
+        raise ExtractionError("All extraction methods failed")
 
     def _extract_structured(self, html: str, schema: type[T]) -> T:
         """Try JSON-LD → OpenGraph → Twitter Card in order (zero LLM cost)."""
@@ -171,3 +188,147 @@ Return ONLY valid JSON. Use null for missing fields."""
                 truncated = truncated[:last_tag_end + 1]
             return truncated
         return html
+
+    def extract_structured(self, html: str) -> dict:
+        """Extract structured data from HTML in priority order: JSON-LD → Microdata → OpenGraph → Meta."""
+        import re
+        import json
+
+        result = {}
+
+        # 1. JSON-LD
+        ld_matches = re.findall(
+            r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
+            html, re.DOTALL
+        )
+        for ld_str in ld_matches:
+            try:
+                data = json.loads(ld_str)
+                if isinstance(data, dict):
+                    for key in ['name', 'description', 'price', 'image']:
+                        if key in data:
+                            result[key] = data[key]
+                elif isinstance(data, list) and data:
+                    for key in ['name', 'description']:
+                        if key in data[0]:
+                            result[key] = data[0][key]
+            except json.JSONDecodeError:
+                continue
+
+        # 2. OpenGraph
+        og_pattern = re.compile(
+            r'<meta\s+[^>]*property="og:([^"]+)"[^>]*content="([^"]*)"',
+            re.IGNORECASE
+        )
+        for match in og_pattern.finditer(html):
+            key = match.group(1)
+            result[f'og_{key}'] = match.group(2)
+
+        # 3. Meta tags
+        meta_pattern = re.compile(
+            r'<meta\s+[^>]*name="([^"]+)"[^>]*content="([^"]*)"',
+            re.IGNORECASE
+        )
+        for match in meta_pattern.finditer(html):
+            key = match.group(1)
+            if key in ('description', 'keywords', 'author'):
+                result[key] = match.group(2)
+
+        return result
+
+    def smart_html_truncate(self, html: str, max_chars: int = 15000) -> str:
+        """Keep semantically important parts, remove boilerplate."""
+        import re
+
+        # Keep: JSON-LD, OpenGraph, main/article, title
+        important_parts = []
+
+        # JSON-LD blocks
+        for m in re.finditer(r'<script[^>]*type="application/ld\+json"[^>]*>.*?</script>', html, re.DOTALL):
+            important_parts.append(m.group(0))
+
+        # Title
+        for m in re.finditer(r'<title>.*?</title>', html, re.DOTALL):
+            important_parts.append(m.group(0))
+
+        # Main content area
+        for tag in ['main', 'article', '[role=main]']:
+            pattern = re.compile(rf'<{tag}[^>]*>.*?</{tag}>', re.DOTALL | re.IGNORECASE)
+            for m in pattern.finditer(html):
+                important_parts.append(m.group(0))
+
+        # Body if nothing found
+        if not important_parts:
+            body_match = re.search(r'<body[^>]*>.*?</body>', html, re.DOTALL | re.IGNORECASE)
+            if body_match:
+                important_parts.append(body_match.group(0)[:max_chars])
+
+        result = '\n'.join(important_parts)
+        return result[:max_chars]
+
+    async def _try_llm(self, html: str, fields: list[str] | None = None, url: str = "") -> dict | None:
+        """Use LLM to extract fields from HTML as fallback."""
+        # 如果没有配置 LLM，跳过
+        try:
+            from ..config.schema import Settings
+            settings = Settings()
+            if not settings.llm or not settings.llm.api_key:
+                return None
+        except Exception:
+            return None
+
+        # 先尝试结构化提取
+        structured = self.extract_structured(html)
+
+        # 检查是否已满足所有字段需求
+        if fields and all(f in structured for f in fields):
+            return structured
+
+        # 裁剪 HTML
+        truncated = self.smart_html_truncate(html)
+
+        # 构建 LLM Prompt
+        field_list = ', '.join(fields) if fields else 'title, description, price'
+        prompt = f"""从以下 HTML 中提取指定字段，返回 JSON 格式。
+        
+需要提取的字段: {field_list}
+
+HTML 内容:
+{truncated}
+
+要求:
+- 只返回 JSON，不要其他文字
+- 如果某个字段找不到，设为 null
+- 保持原始文本，不要改写"""
+
+        try:
+            import httpx
+            api_key = settings.llm.api_key.get_secret_value() if hasattr(settings.llm.api_key, 'get_secret_value') else str(settings.llm.api_key)
+            model = settings.llm.model or "deepseek-chat"
+            base_url = settings.llm.base_url or "https://api.deepseek.com"
+
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    f"{base_url}/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0,
+                        "response_format": {"type": "json_object"},
+                    }
+                )
+                data = resp.json()
+                content = data["choices"][0]["message"]["content"]
+
+                import json as _json
+                extracted = _json.loads(content)
+
+                # 合并结构化数据（结构化数据优先）
+                extracted.update({k: v for k, v in structured.items() if v})
+
+                return extracted
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"_try_llm failed: {e}")
+            return structured if structured else None
