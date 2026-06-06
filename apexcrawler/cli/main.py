@@ -100,6 +100,7 @@ def cli(ctx: click.Context, log_level: str, json_log: bool) -> None:
 @click.option("--geo", "-g", "geo_code", default="", help="Force proxy geo location")
 @click.option("--timeout", "-t", type=click.IntRange(min=1), default=30, help="Request timeout in seconds")
 @click.option("--retries", "-r", type=click.IntRange(min=1), default=3, help="Max retry attempts")
+@click.option("--fast", is_flag=True, default=False, help="Skip human-like timing delays (faster but more detectable)")
 @click.pass_context
 def crawl(
     ctx: click.Context,
@@ -112,6 +113,7 @@ def crawl(
     geo_code: str,
     timeout: int,
     retries: int,
+    fast: bool,
 ) -> None:
     """Crawl a single URL or batch of URLs.
 
@@ -196,6 +198,13 @@ def crawl(
 
                 # Build pipeline stages
                 timing = TimingScheduler()
+                if fast:
+                    # 快速模式：跳过拟人化定时延迟，适合测试
+                    class _FastTiming:
+                        _page_count = 0
+                        def compute_delay(self, **kw): return 0.5
+                        def reset(self): pass
+                    timing = _FastTiming()
                 stages = [
                     ScheduleStage(timing=timing),
                     RouteStage(),
@@ -210,7 +219,7 @@ def crawl(
                 ]
                 configs = {
                     "extract": StageConfig(timeout=timeout, retry=RetryPolicy(max_retries=retries)),
-                    "schedule": StageConfig(timeout=10),
+                    "schedule": StageConfig(timeout=10 if fast else timeout * 3, retry=RetryPolicy(max_retries=0 if fast else 2)),
                 }
                 degrade_mgr = DegradeManager()
                 from ..plugins import PluginManager
