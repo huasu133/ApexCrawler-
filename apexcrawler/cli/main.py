@@ -166,6 +166,9 @@ def crawl(
         from ..http.connection_pool import ConnectionReuseManager
         from ..http.tls_router import TLSRouter
         from ..pipeline.degrade import DegradeManager
+        from ..engines.pool import EnginePool
+        # 导入引擎模块，触发 @EngineRegistry.register 装饰器自动注册
+        from ..engines import vanilla, cloaked, camouflaged, patched
 
         schema = get_schema(schema_name)
 
@@ -174,6 +177,8 @@ def crawl(
         rate_ctrl = RateController()
         conn_mgr = ConnectionReuseManager()
         tls_router = TLSRouter()
+        # 浏览器引擎池 — 自动发现已注册的引擎（Vanilla、Cloaked、Camoufox、Patched）
+        engine_pool = EnginePool()
 
         for idx, target_url in enumerate(urls, 1):
             click.echo(f"\n[{idx}/{len(urls)}] Crawling: {target_url}")
@@ -190,13 +195,13 @@ def crawl(
                     ctx_obj.selected_engine = engine_name
 
                 # Build pipeline stages
-                timing = TimingScheduler(rate_controller=rate_ctrl)
+                timing = TimingScheduler()
                 stages = [
                     ScheduleStage(timing=timing),
                     RouteStage(),
                     EvadeStage(router=tls_router, proxies=[proxy_url] if proxy_url else []),
                     ExtractStage(
-                        engine_factory=None,
+                        engine_factory=engine_pool,
                         conn_manager=conn_mgr,
                     ),
                     ValidateStage(),
@@ -244,6 +249,9 @@ def crawl(
                     "errors": result.validation_errors,
                 })
 
+            except ValueError as e:
+                click.echo(f"  [SSRF 安全校验失败] {e}", err=True)
+                results.append({"url": target_url, "error": f"SSRF blocked: {e}"})
             except Exception as e:
                 click.echo(f"  Error: {e}", err=True)
                 results.append({"url": target_url, "error": str(e)})
@@ -255,6 +263,9 @@ def crawl(
             click.echo(f"\nResults written to: {output_path}")
         else:
             click.echo(f"\nResults: {json.dumps(results, indent=2, ensure_ascii=False)}")
+
+        # 关闭所有引擎实例
+        await engine_pool.close_all()
 
     asyncio.run(_run())
 
