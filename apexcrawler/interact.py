@@ -1,7 +1,9 @@
 """Page interaction executor — runs JSON action sequences on pages."""
 from __future__ import annotations
+import asyncio
 import json
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -74,7 +76,6 @@ async def _execute_single(page, action: Dict[str, Any]):
 
     elif action_type == "wait":
         ms = action.get("ms", 1000)
-        import asyncio
         await asyncio.sleep(ms / 1000)
         return {"waited_ms": ms}
 
@@ -82,8 +83,6 @@ async def _execute_single(page, action: Dict[str, Any]):
         data = await page.screenshot()
         path = action.get("path", "")
         if path and data:
-            import os
-            # 路径遍历防护：只允许写入当前目录或 output 目录
             safe_path = os.path.normpath(os.path.abspath(path))
             allowed_base = os.path.abspath(os.path.join(os.getcwd(), "output"))
             if not safe_path.startswith(os.path.abspath(os.getcwd())) and not safe_path.startswith(allowed_base):

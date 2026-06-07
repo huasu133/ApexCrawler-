@@ -27,10 +27,10 @@ COPY --from=builder /root/.local /root/.local
 ENV PATH=/root/.local/bin:$PATH
 
 # Pre-download Playwright Chromium
-RUN playwright install chromium 2>&1 || true
+RUN playwright install chromium 2>&1 || echo "WARNING: Playwright Chromium pre-download failed, will download at runtime" 1>&2
 
 # Pre-download CloakBrowser binary
-RUN python3 -c "import cloakbrowser.download; cloakbrowser.download.ensure_binary()" 2>&1 || echo "CloakBrowser binary download deferred to runtime"
+RUN python3 -c "import cloakbrowser.download; cloakbrowser.download.ensure_binary()" 2>&1 || echo "WARNING: CloakBrowser binary pre-download failed, will download at runtime" 1>&2
 
 COPY apexcrawler/ ./apexcrawler/
 COPY pyproject.toml .

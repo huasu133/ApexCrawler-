@@ -18,7 +18,7 @@ async def fetch_url(url: str, timeout: int = 10) -> Optional[str]:
         import httpx
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             resp = await client.get(url, headers={
-                "User-Agent": "Mozilla/5.0 (compatible; ApexCrawler/1.0)",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
                 "Accept": "text/html,application/xml,*/*",
             })
             resp.raise_for_status()

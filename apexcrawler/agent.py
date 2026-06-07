@@ -221,8 +221,14 @@ async def _execute_tool(name: str, args: Dict, api_token: str = "") -> Any:
                 })
                 html = resp.text
             if html:
-                text = re.sub(r'<[^>]+>', ' ', html)
-                text = re.sub(r'\s+', ' ', text).strip()
+                try:
+                    from bs4 import BeautifulSoup
+                    soup = BeautifulSoup(html, "html.parser")
+                    text = soup.get_text(separator=" ", strip=True)
+                except ImportError:
+                    # Fallback to regex
+                    text = re.sub(r'<[^>]+>', ' ', html)
+                    text = re.sub(r'\s+', ' ', text).strip()
                 return {"url": url, "content": text[:5000]}
             return {"url": url, "error": "No content"}
         except Exception as e:
