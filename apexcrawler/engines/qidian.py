@@ -756,6 +756,22 @@ class QidianEngine(BaseEngine):
         browser = await cloakbrowser.launch_async(headless=False)
         try:
             context = await browser.new_context()
+
+            # 注入已保存的 Cookie
+            stored = self._cookie_store.load()
+            if stored:
+                for c in stored:
+                    try:
+                        await context.add_cookies([{
+                            "name": c["name"],
+                            "value": c["value"],
+                            "domain": ".qidian.com",
+                            "path": "/",
+                        }])
+                    except Exception:
+                        pass
+                logger.debug("已注入 %d 个 Cookie 到浏览器", len(stored))
+
             page = await context.new_page()
             await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
             await page.wait_for_load_state("networkidle", timeout=30_000)
@@ -763,9 +779,13 @@ class QidianEngine(BaseEngine):
 
             # 通过 evaluate 提取正文
             text = await page.evaluate("""() => {
-                const content = document.querySelector('.read-content, #chapter-content, .content, [class*=\"content\"]');
-                if (content) return content.innerText.trim();
-                // Fallback: get all visible text
+                const selectors = ['.read-content', '#chapter-content', '.content', '[class*=\"content\"] p', '.j_readContent', '.article-content'];
+                for (const sel of selectors) {
+                    const el = document.querySelector(sel);
+                    if (el && el.innerText.trim().length > 100) {
+                        return el.innerText.trim();
+                    }
+                }
                 return document.body.innerText.trim();
             }""")
             return text or ""
