@@ -119,6 +119,8 @@ def cli(ctx: click.Context, log_level: str, json_log: bool, quiet: bool, verbose
     configure_logging(level=log_level, json_format=json_log)
     ctx.ensure_object(dict)
     ctx.obj["log_level"] = log_level
+    ctx.obj["quiet"] = quiet
+    ctx.obj["verbose"] = verbose
 
 
 # ── crawl command ──────────────────────────────────────────
@@ -136,6 +138,8 @@ def cli(ctx: click.Context, log_level: str, json_log: bool, quiet: bool, verbose
 @click.option("--fast", is_flag=True, default=False, help="跳过人类行为模拟延迟（更快但更容易被检测）")
 @click.option("--markdown", "markdown_output", is_flag=True, default=False, help="输出为干净的 Markdown 格式（使用 Crawl4AI 提纯）")
 @click.option("--json/--no-json", "json_output", default=False, help="输出 JSON 格式结果（默认直接显示内容）")
+@click.option("--quiet", is_flag=True, default=False, help="静默模式，仅显示错误", hidden=True)
+@click.option("--verbose", is_flag=True, default=False, help="详细模式，显示调试信息", hidden=True)
 @click.option("--resume", is_flag=True, default=False, help="从上次中断的检查点恢复爬取")
 @click.option("--checkpoint-dir", type=click.Path(), default=None, help="检查点存储目录")
 @click.pass_context
@@ -153,6 +157,8 @@ def crawl(
     fast: bool,
     markdown_output: bool,
     json_output: bool,
+    quiet: bool,
+    verbose: bool,
     resume: bool,
     checkpoint_dir: Optional[str],
 ) -> None:
@@ -210,6 +216,18 @@ def crawl(
         click.echo(f"  Geo: {geo_code}")
     if fast:
         click.echo(f"  Mode: fast (no proxy, minimal delays)")
+
+    # Apply quiet/verbose from command or group context
+    if not quiet:
+        quiet = ctx.obj.get("quiet", False)
+    if not verbose:
+        verbose = ctx.obj.get("verbose", False)
+    if quiet:
+        from ..utils.logger import configure_logging
+        configure_logging(level="WARNING", json_format=False)
+    elif verbose:
+        from ..utils.logger import configure_logging
+        configure_logging(level="DEBUG", json_format=False)
 
     async def _run():
         results = []
@@ -1257,7 +1275,7 @@ async function ask() {
         `<div style="margin-bottom:8px;"><span style="color:#e94560;font-weight:500;">${k}</span><br><span style="color:#ccc;">${v}</span></div>`
       ).join('');
       // Exclude internal fields
-      contentHtml = contentHtml.replace(/<div[^>]*>_raw_html[^<]*<\/div>/g, '');
+      contentHtml = contentHtml.replace(/<div[^>]*>_raw_html[^<]*</div>/g, '');
     }
     if (!contentHtml) contentHtml = '<div style="color:#888;">未提取到内容</div>';
     contentDiv.innerHTML = contentHtml;
