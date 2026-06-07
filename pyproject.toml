@@ -48,6 +48,7 @@ vanilla = "apexcrawler.engines.vanilla:VanillaEngine"
 patched = "apexcrawler.engines.patched:PatchedEngine"
 camoufox = "apexcrawler.engines.camouflaged:CamoufoxEngine"
 cloaked = "apexcrawler.engines.cloaked:CloakedEngine"
+qidian = "apexcrawler.engines.qidian:QidianEngine"
 
 [tool.setuptools.packages.find]
 include = ["apexcrawler*"]

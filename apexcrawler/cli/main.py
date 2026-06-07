@@ -1059,6 +1059,185 @@ document.getElementById('query').addEventListener('keydown', e => {
     await server.serve()
 
 
+# ── qidian command ────────────────────────────────────────
+
+@cli.group()
+def qidian() -> None:
+    """起点中文网爬取工具（需登录）。"""
+    pass
+
+
+@qidian.command()
+@click.option("--cookie-name", default="qidian", help="Cookie 保存名称")
+def login(cookie_name: str) -> None:
+    """扫码登录起点 → 导出 Cookie。"""
+    from ..engines.qidian import QidianEngine
+
+    click.echo("正在启动浏览器进行扫码登录...")
+    engine = QidianEngine(headless=False)
+    try:
+        qc = engine.login_sync()
+        if qc.parsed:
+            click.echo(f"登录成功，获取到 {len(qc.parsed)} 个 Cookie")
+            # 转为 Playwright cookie 格式保存
+            pw_cookies = [
+                {"name": k, "value": v, "domain": ".qidian.com", "path": "/"}
+                for k, v in qc.parsed.items()
+            ]
+            path = engine.save_cookies(pw_cookies, name=cookie_name)
+            click.echo(f"Cookie 已保存: {path}")
+
+            if qc.expires_at:
+                expires = qc.expires_at.strftime("%Y-%m-%d %H:%M:%S")
+                click.echo(f"过期时间: {expires}")
+        else:
+            click.echo("登录失败，未能获取到 Cookie")
+    except Exception as e:
+        click.echo(f"登录失败: {e}", err=True)
+        sys.exit(1)
+
+
+@qidian.command()
+@click.argument("book_id", type=int)
+@click.option("--cookie-name", default="qidian", help="Cookie 文件名称")
+@click.option("--no-cookie", is_flag=True, help="不使用 Cookie（仅查看公开信息）")
+def info(book_id: int, cookie_name: str, no_cookie: bool) -> None:
+    """查看书籍信息 + 章节列表。"""
+    from ..engines.qidian import QidianEngine
+
+    engine = QidianEngine()
+    try:
+        # 注入 Cookie
+        if not no_cookie:
+            cookies = engine.load_cookies(name=cookie_name)
+            if cookies:
+                engine.set_cookies_from_list(cookies)
+                click.echo(f"已加载 Cookie ({len(cookies)} 个)")
+            else:
+                click.echo(
+                    "未找到有效的 Cookie，请先执行 'apex qidian login'",
+                    err=True,
+                )
+                sys.exit(1)
+
+        chapters = engine.fetch_catalog(book_id)
+        if not chapters:
+            click.echo("未获取到章节列表，请检查 book_id 或 Cookie 是否有效")
+            sys.exit(1)
+
+        vip_count = sum(1 for c in chapters if c.is_vip)
+        free_count = len(chapters) - vip_count
+        total_words = sum(c.word_count for c in chapters)
+
+        click.echo(f"\n书籍 ID: {book_id}")
+        click.echo(f"总章节数: {len(chapters)}")
+        click.echo(f"免费章节: {free_count}")
+        click.echo(f"付费章节: {vip_count}")
+        click.echo(f"总字数: {total_words:,}\n")
+
+        click.echo(f"{'序号':>4}  {'标题':<30} {'字数':>6}  {'状态':<4}  {'章节ID':<8}")
+        click.echo("-" * 70)
+        for ch in chapters[:50]:  # 显示前 50 章
+            status = "VIP" if ch.is_vip else "免费"
+            click.echo(
+                f"{ch.index:>4}  {ch.title[:28]:<30} "
+                f"{ch.word_count:>6}  {status:<4}  {ch.chapter_id:<8}"
+            )
+
+        if len(chapters) > 50:
+            click.echo(f"\n... 共 {len(chapters)} 章，仅展示前 50 章")
+    except Exception as e:
+        click.echo(f"获取信息失败: {e}", err=True)
+        sys.exit(1)
+
+
+@qidian.command()
+@click.argument("book_id", type=int)
+@click.option("--cookie-name", default="qidian", help="Cookie 文件名称")
+@click.option("--output", "-o", type=click.Choice(["json", "txt"]), default="json", help="输出格式")
+@click.option("--limit", "-n", type=int, default=0, help="限制爬取章节数（0=全部）")
+@click.option("--start", "-s", type=int, default=1, help="从第几章开始")
+@click.option("--delay", is_flag=True, help="模拟真实阅读延迟")
+@click.option("--dir", "out_dir", type=click.Path(), default=None, help="输出目录")
+def crawl(
+    book_id: int,
+    cookie_name: str,
+    output: str,
+    limit: int,
+    start: int,
+    delay: bool,
+    out_dir: Optional[str],
+) -> None:
+    """爬取免费章节。"""
+    from ..engines.qidian import QidianEngine
+
+    engine = QidianEngine(storage_dir=out_dir)
+    try:
+        # 加载 Cookie
+        cookies = engine.load_cookies(name=cookie_name)
+        if cookies:
+            engine.set_cookies_from_list(cookies)
+            click.echo(f"已加载 Cookie ({len(cookies)} 个)")
+        else:
+            click.echo(
+                "未找到有效的 Cookie，请先执行 'apex qidian login'",
+                err=True,
+            )
+            sys.exit(1)
+
+        # 获取章节列表
+        chapters = engine.fetch_catalog(book_id)
+        if not chapters:
+            click.echo("未获取到章节列表")
+            sys.exit(1)
+
+        # 筛选免费章节 + 起始偏移
+        free_chapters = [c for c in chapters if not c.is_vip]
+        click.echo(f"\n书籍共 {len(chapters)} 章（免费 {len(free_chapters)} 章）")
+
+        target_chapters = free_chapters[start - 1:]
+        if limit > 0:
+            target_chapters = target_chapters[:limit]
+
+        click.echo(
+            f"准备爬取 {len(target_chapters)} 章 "
+            f"(从第 {target_chapters[0].index} 章到第 {target_chapters[-1].index} 章)"
+        )
+
+        # 爬取正文
+        click.echo("\n开始爬取...")
+        results = engine.fetch_chapters(target_chapters)
+
+        # 统计
+        success = sum(1 for c in results if c.content)
+        total_words = sum(c.word_count for c in results)
+
+        click.echo(f"\n爬取完成: {success}/{len(results)} 章成功")
+        click.echo(f"总字数: {total_words:,}")
+
+        # 获取书名
+        book_title = f"book_{book_id}"
+
+        # 保存结果
+        if output == "json":
+            path = engine.save_book_json(book_id, book_title, results)
+        else:
+            path = engine.save_book_txt(book_id, book_title, results)
+
+        click.echo(f"结果已保存: {path}")
+
+        if delay and success > 0:
+            avg_words = total_words // success
+            click.echo(
+                f"\n若启用阅读模拟，预计阅读时间: "
+                f"{avg_words * success // 1000} 分钟"
+            )
+
+    except Exception as e:
+        click.echo(f"爬取失败: {e}", err=True)
+        sys.exit(1)
+
+
 # ── config command ─────────────────────────────────────────
 
 @cli.group()
