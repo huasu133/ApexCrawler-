@@ -27,6 +27,7 @@ dependencies = [
     "pyyaml>=6.0",
     "structlog>=24.4",
     "rich>=13.9",
+    "cloakbrowser>=0.3",
 ]
 
 [project.optional-dependencies]
@@ -54,6 +55,7 @@ vanilla = "apexcrawler.engines.vanilla:VanillaEngine"
 patched = "apexcrawler.engines.patched:PatchedEngine"
 camoufox = "apexcrawler.engines.camouflaged:CamoufoxEngine"
 cloaked = "apexcrawler.engines.cloaked:CloakedEngine"
+cloaked_v2 = "apexcrawler.engines.cloaked_v2:CloakedV2Engine"
 qidian = "apexcrawler.engines.qidian:QidianEngine"
 
 [tool.setuptools.packages.find]

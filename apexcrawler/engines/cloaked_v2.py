@@ -1,19 +1,17 @@
 """CloakedV2 engine — CloakBrowser stealth engine with enhanced fingerprint control.
 
-CloakBrowser v2 provides the most advanced anti-detection capabilities with
+CloakBrowser provides the most advanced anti-detection capabilities with
 JA4/TLS diversity at level 12, fingerprint resistance at level 12, CDP-level
 hiding, WASM interception, and WebGPU virtualization.
 
-This engine uses CloakBrowser's async API (API-compatible with Playwright).
-For full CloakBrowser features (WASM interception, WebGPU virtualization),
-set the executable_path to the CloakBrowser binary.
+This engine uses CloakBrowser's launch_async() API which returns a standard
+Playwright Browser object with C++-level fingerprint patches applied.
 
 Status: INTEGRATED — Real implementation via CloakBrowser async API.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from apexcrawler.engines.base import BaseEngine, EngineCapability
@@ -25,15 +23,15 @@ logger = logging.getLogger(__name__)
 
 @EngineRegistry.register
 class CloakedV2Engine(BaseEngine):
-    """CloakBrowser v2 maximum-stealth engine (enhanced fingerprint control).
+    """CloakBrowser maximum-stealth engine (enhanced fingerprint control).
 
     Provides:
-    - CDP (Chrome DevTools Protocol) message hiding via CloakBrowser binary
-    - WASM module interception and modification via CloakBrowser SDK
+    - 49 C++-level Chromium patches (Canvas, WebGL, AudioContext, WebRTC, fonts, navigator)
+    - CDP message hiding via CloakBrowser binary
+    - WASM module interception and modification
     - WebGPU virtualization for fingerprint-consistent GPU rendering
     - Full fingerprint vector control with anti-bot bypass arguments
     - DeviceProfile init_script injection for consistent browser fingerprint
-    - Enhanced JA4/TLS diversity (level 12) and fingerprint resistance (level 12)
 
     Use CloakedV2Engine for the most difficult targets that have defeated
     all lower-tier engines, including CloakedEngine v1.
@@ -64,14 +62,13 @@ class CloakedV2Engine(BaseEngine):
 
     async def launch(self) -> None:
         try:
-            from cloak_browser.async_api import async_playwright
+            import cloakbrowser
         except ImportError:
             raise ImportError(
                 "CloakBrowser required for CloakedV2Engine. "
-                "Install: pip install cloak-browser"
+                "Install: pip install cloakbrowser"
             )
 
-        self._pw = await async_playwright().start()
         launch_args = {
             "headless": self._headless,
             "args": [
@@ -84,7 +81,7 @@ class CloakedV2Engine(BaseEngine):
             launch_args["executable_path"] = self._executable
             logger.info(f"CloakedV2Engine using CloakBrowser binary: {self._executable}")
 
-        self._browser = await self._pw.chromium.launch(**launch_args)
+        self._browser = await cloakbrowser.launch_async(**launch_args)
         self._context = await self._browser.new_context(viewport=self._viewport)
         self._page = await self._context.new_page()
 
@@ -98,7 +95,7 @@ class CloakedV2Engine(BaseEngine):
         self._wasm_interceptor = WASMInterceptor()
         await self._wasm_interceptor.inject(self._page)
 
-        logger.info("CloakedV2Engine launched successfully (WASM interceptor + fingerprint injection active)")
+        logger.info("CloakedV2Engine launched successfully (CloakBrowser + WASM interceptor + fingerprint injection active)")
 
     async def navigate(self, url: str, proxy: str | None = None):
         if not self._page:
@@ -136,8 +133,6 @@ class CloakedV2Engine(BaseEngine):
         if self._browser:
             await self._browser.close()
             self._browser = None
-        if hasattr(self, '_pw'):
-            await self._pw.stop()
 
     async def health_check(self) -> bool:
         if self._browser is None:
