@@ -1,4 +1,4 @@
-"""Fingerprint consistency: single source of truth for all 6 layers.
+"""Fingerprint consistency: single source of truth for all injection layers.
 
 Provides DeviceProfile definitions and CDP-level injection for:
   1. TLS (JA4)
@@ -7,6 +7,13 @@ Provides DeviceProfile definitions and CDP-level injection for:
   4. Canvas (randomised hash seed)
   5. WebGL (renderer, vendor)
   6. AudioContext (oscillator fingerprint seed)
+
+Fixes applied (2025-06-07):
+  - Removed console.debug log that leaked ApexCrawler marker (WAF probe detection)
+  - Fixed navigator.plugins to return proper PluginArray with real Chrome plugin objects
+    (PDF Viewer, Chrome PDF Plugin, Native Client) instead of numeric array [1,2,3,4,5]
+  - Added navigator.mimeTypes coverage with corresponding MIME types linked to plugins
+  - Added $cdc_ variable cleanup to remove Playwright automation markers from document
 """
 
 from __future__ import annotations
@@ -111,16 +118,93 @@ Object.defineProperty(navigator, 'language', {{
     get: () => '{self.language}',
     configurable: false,
 }});
+Object.defineProperty(navigator, 'languages', {{
+    get: () => ['{self.language}', '{self.language.split("-")[0]}'],
+    configurable: false,
+}});
 
-// ── Layer 1.5: plugins / mimeTypes (93% fingerprint libs check this) ──
+// ── Layer 1.2: Network Information (connection) ──
+if (!navigator.connection) {{
+    Object.defineProperty(navigator, 'connection', {{
+        get: () => ({{
+            effectiveType: '4g',
+            rtt: Math.floor(Math.random() * 50) + 50,
+            downlink: Math.random() * 10 + 5,
+            saveData: false,
+        }}),
+    }});
+}}
+
+// ── Layer 1.5: plugins (real PluginArray with Chrome plugins) ──
+// Helper constructors for Plugin/MimeType-like objects
+function _MimeType(type, suffixes, desc) {{
+    this.type = type;
+    this.suffixes = suffixes;
+    this.description = desc;
+}}
+function _Plugin(name, filename, desc) {{
+    this.name = name;
+    this.filename = filename;
+    this.description = desc;
+    this.length = 0;
+}}
+// Native Client plugin
+var _pn = new _Plugin('Native Client', 'internal-nacl-plugin', 'Native Client Executable');
+var _mn = [
+    new _MimeType('application/x-nacl', '', 'Native Client Executable'),
+    new _MimeType('application/x-pnacl', '', 'Portable Native Client Executable'),
+];
+_pn.length = _mn.length;
+for (var _ai = 0; _ai < _mn.length; _ai++) {{ _pn[_ai] = _mn[_ai]; _mn[_ai].enabledPlugin = _pn; }}
+// PDF Viewer plugin
+var _pp = new _Plugin('PDF Viewer', 'internal-pdf-viewer', 'Portable Document Format');
+var _mp = [
+    new _MimeType('application/pdf', 'pdf', 'Portable Document Format'),
+    new _MimeType('text/pdf', 'pdf', 'Portable Document Format'),
+];
+_pp.length = _mp.length;
+for (var _bi = 0; _bi < _mp.length; _bi++) {{ _pp[_bi] = _mp[_bi]; _mp[_bi].enabledPlugin = _pp; }}
+// Chrome PDF Plugin
+var _pc = new _Plugin('Chrome PDF Plugin', 'internal-pdf-plugin', 'Portable Document Format');
+var _mc = [
+    new _MimeType('application/x-google-chrome-pdf', 'pdf', 'Portable Document Format'),
+];
+_pc.length = _mc.length;
+for (var _ci = 0; _ci < _mc.length; _ci++) {{ _pc[_ci] = _mc[_ci]; _mc[_ci].enabledPlugin = _pc; }}
+// Build PluginArray
+var _pluginsArr = [_pp, _pc, _pn];
+_pluginsArr.length = 3;
+_pluginsArr.item = function(i) {{ return this[i] || null; }};
+_pluginsArr.namedItem = function(n) {{
+    for (var i = 0; i < this.length; i++) {{
+        if (this[i].name === n) return this[i];
+    }}
+    return null;
+}};
+_pluginsArr.refresh = function() {{}};
 Object.defineProperty(navigator, 'plugins', {{
-    get: () => {{
-        const arr = [1, 2, 3, 4, 5];
-        arr.item = (i) => arr[i];
-        arr.namedItem = () => arr[0];
-        arr.refresh = () => {{}};
-        return arr;
-    }},
+    get: () => _pluginsArr,
+    configurable: false,
+}});
+
+// ── Layer 1.6: mimeTypes (real MimeTypeArray matching plugins) ──
+var _mimeArr = [];
+for (var _di = 0; _di < _pluginsArr.length; _di++) {{
+    var _p = _pluginsArr[_di];
+    for (var _ei = 0; _ei < _p.length; _ei++) {{
+        _mimeArr.push(_p[_ei]);
+    }}
+}}
+_mimeArr.length = _mimeArr.length;
+_mimeArr.item = function(i) {{ return this[i] || null; }};
+_mimeArr.namedItem = function(n) {{
+    for (var i = 0; i < this.length; i++) {{
+        if (this[i].type === n) return this[i];
+    }}
+    return null;
+}};
+Object.defineProperty(navigator, 'mimeTypes', {{
+    get: () => _mimeArr,
     configurable: false,
 }});
 
@@ -221,7 +305,15 @@ if (typeof Intl !== 'undefined' && Intl.DateTimeFormat) {{
     }};
 }}
 
-console.debug('[ApexCrawler] DeviceProfile injected: {self.name}');
+// ── Layer 7: Clean Playwright automation markers ($cdc_) ──
+try {{
+    var _cdcProps = Object.getOwnPropertyNames(document);
+    for (var _fi = 0; _fi < _cdcProps.length; _fi++) {{
+        if (_cdcProps[_fi].indexOf('$cdc_') === 0) {{
+            delete document[_cdcProps[_fi]];
+        }}
+    }}
+}} catch(_e) {{}}
 }})();
 """
 
@@ -275,6 +367,26 @@ DEVICE_PROFILES = [
         webgl_renderer="ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0)",
         webgl_vendor="Google Inc. (NVIDIA)",
         timezone="America/Chicago",
+    ),
+    DeviceProfile(
+        name="cn_win_chrome_120",
+        user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        platform="Win32",
+        sec_ch_ua=(
+            '"Google Chrome";v="120", "Chromium";v="120", "Not=A?Brand";v="24"'
+        ),
+        sec_ch_ua_platform='"Windows"',
+        webgl_vendor="Google Inc. (Intel)",
+        webgl_renderer=(
+            "ANGLE (Intel, Intel(R) UHD Graphics Direct3D11 vs_5_0 ps_5_0)"
+        ),
+        timezone="Asia/Shanghai",
+        language="zh-CN",
+        accept_language="zh-CN,zh;q=0.9",
     ),
     DeviceProfile(
         name="mac_safari_17",

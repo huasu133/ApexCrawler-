@@ -33,6 +33,7 @@ class RateController:
         self._level = 0
         self._last_request = 0.0
         self._recovery_counter = 0
+        self._lock = asyncio.Lock()
 
     @property
     def current_rate(self) -> float:
@@ -64,7 +65,8 @@ class RateController:
         if elapsed < interval:
             wait_time = interval - elapsed
             await asyncio.sleep(wait_time)
-        self._last_request = time.monotonic()
+        async with self._lock:
+            self._last_request = time.monotonic()
         self._maybe_recover()
 
     def signal(self, status: int = 0, html: str = ""):
@@ -99,11 +101,12 @@ class RateController:
         self._recovery_counter = min(self._recovery_counter + 10, 100)
         self._maybe_recover()
 
-    def get_delay(self) -> float:
+    async def get_delay(self) -> float:
         """Get the wait time before next request based on current rate."""
         interval = 1.0 / self.current_rate if self.current_rate > 0 else 20
         elapsed = time.monotonic() - self._last_request
-        self._last_request = time.monotonic()
+        async with self._lock:
+            self._last_request = time.monotonic()
         if elapsed < interval:
             return max(0, interval - elapsed)
         self._maybe_recover()

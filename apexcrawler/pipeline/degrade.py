@@ -80,11 +80,9 @@ class DegradeManager:
 
         if status in (403, 429, 503):
             self._failures[domain] = self._failures.get(domain, 0) + 1
-
-        if state.captcha_detected:
+        elif state.captcha_detected:
             self._failures[domain] = self._failures.get(domain, 0) + 1
-
-        if state.last_body_len < 200:
+        elif state.last_body_len < 200:
             self._failures[domain] = self._failures.get(domain, 0) + 1
 
         # 确定当前层级
@@ -124,8 +122,8 @@ class DegradeManager:
         _DEGRADE_CHAIN = {
             "": "vanilla",
             "api": "vanilla",
-            "vanilla": "playwright",
-            "playwright": "camoufox",
+            "vanilla": "patched",
+            "patched": "camoufox",
             "camoufox": "cloaked",
         }
         return _DEGRADE_CHAIN.get(current_engine, "cloaked")

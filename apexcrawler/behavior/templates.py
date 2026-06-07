@@ -244,3 +244,40 @@ async def execute_behavior(
     """
     template = create_sequence(humanizer, template_name, **kwargs)
     await template.execute()
+
+
+# ── Template metadata registry ──────────────────────────────────
+
+
+TEMPLATES: dict[str, dict] = {
+    "idle_browsing": {
+        "name": "idle_browsing",
+        "description": "Casual page browsing with mouse movement and scrolling",
+        "class": "IdleBrowsingTemplate",
+        "profiles": [],
+    },
+    "search_and_type": {
+        "name": "search_and_type",
+        "description": "Search query input with human-like typing",
+        "class": "SearchAndTypeTemplate",
+        "profiles": [],
+    },
+    "fill_form": {
+        "name": "fill_form",
+        "description": "Form filling with field-by-field input",
+        "class": "FillFormTemplate",
+        "profiles": [],
+    },
+    "content_consumption": {
+        "name": "content_consumption",
+        "description": "Long-form content reading with progressive scrolling",
+        "class": "ContentConsumptionTemplate",
+        "profiles": [],
+    },
+    "novel_reader": {
+        "name": "novel_reader",
+        "description": "Web novel reader — simulates reading chapters with realistic pacing",
+        "class": "NovelReaderTemplate",
+        "profiles": ["engrossed", "skimmer", "relaxed"],
+    },
+}

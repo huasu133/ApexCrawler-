@@ -66,7 +66,7 @@ class PipelineExecutor:
         for stage in self._stages:
             # RateController: apply inter-stage pacing
             if self._rate_ctrl and stage.name in ("extract", "evade"):
-                delay = self._rate_ctrl.get_delay()
+                delay = await self._rate_ctrl.get_delay()
                 if delay > 0:
                     await asyncio.sleep(delay)
 
