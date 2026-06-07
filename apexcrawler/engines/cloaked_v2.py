@@ -16,6 +16,7 @@ import logging
 
 from apexcrawler.engines.base import BaseEngine, EngineCapability
 from apexcrawler.engines.subresource import ensure_subresource_load
+from apexcrawler.core.protocols import PageInteractionsMixin
 from apexcrawler.routing.registry import EngineRegistry
 
 logger = logging.getLogger(__name__)
@@ -149,7 +150,7 @@ class CloakedV2Engine(BaseEngine):
         return self._browser.is_connected()
 
 
-class _PageAdapter:
+class _PageAdapter(PageInteractionsMixin):
     """Adapter wrapping a CloakBrowser/Playwright Page to conform to the Page protocol."""
 
     __slots__ = ('_page',)

@@ -372,7 +372,7 @@ async def qidian_crawl(book_id: str, chapters: int = 5) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# New Tools: crawl_site
+# Tools: crawl_site / map_site
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -434,6 +434,26 @@ async def crawl_site(url: str, max_pages: int = 10, same_domain: bool = True) ->
             fetcher.close()
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@server.tool(
+    name="map_site",
+    description="站点 URL 发现 — 输入域名，返回该域名下所有公开 URL 路径列表",
+)
+async def map_site_tool(domain: str, depth: int = 0) -> str:
+    """Discover all public URLs for a domain.
+    
+    Args:
+        domain: Domain name or full URL (e.g. "example.com" or "https://example.com").
+        depth: Optional BFS crawl depth (0 = sitemap only, 1+ = also crawl pages).
+    
+    Returns:
+        JSON string with discovered URLs.
+    """
+    from apexcrawler.map import map_site
+    import json
+    result = await map_site(domain=domain, depth=depth)
+    return json.dumps(result, ensure_ascii=False)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -983,6 +1003,27 @@ async def novel_download(url: str, chapters: str = "") -> str:
         return json.dumps({"file": path, "chapters_range": f"{start}-{end or 'all'}"}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Tool: search
+# ══════════════════════════════════════════════════════════════════════
+
+
+@server.tool(name="search", description="搜索网络并返回结构化结果列表（标题、链接、摘要）")
+async def search_web_tool(query: str, num: int = 10) -> str:
+    """Search the web using configured search provider.
+    
+    Args:
+        query: Search query (e.g. "Python web scraping tutorial")
+        num: Number of results to return (default 10, max 20)
+    
+    Returns:
+        JSON string with search results
+    """
+    from apexcrawler.search import search_web
+    results = await search_web(query=query, num=min(num, 20))
+    return json.dumps([r.to_dict() for r in results], ensure_ascii=False)
 
 
 # ══════════════════════════════════════════════════════════════════════

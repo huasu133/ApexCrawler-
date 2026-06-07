@@ -12,7 +12,7 @@ from playwright.async_api import async_playwright
 import logging
 
 from apexcrawler.core.exceptions import EngineError
-from apexcrawler.core.protocols import Page
+from apexcrawler.core.protocols import Page, PageInteractionsMixin
 from apexcrawler.engines.base import BaseEngine, EngineCapability
 from apexcrawler.engines.subresource import ensure_subresource_load
 from apexcrawler.fingerprint.consistency import DeviceProfile
@@ -119,7 +119,7 @@ class VanillaEngine(BaseEngine):
             self._playwright = None
 
 
-class _PageAdapter:
+class _PageAdapter(PageInteractionsMixin):
     """Adapter wrapping a Playwright page to conform to the Page protocol."""
 
     def __init__(self, pw_page, *, owns_browser_context: bool = False) -> None:

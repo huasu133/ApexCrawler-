@@ -1136,6 +1136,119 @@ def extract(
         click.echo(output_str)
 
 
+# ── search command ──
+
+@cli.command(name="search", help="搜索网络并返回结果")
+@click.argument("query", required=True)
+@click.option("--num", "-n", type=int, default=10, help="返回结果数")
+@click.option("--provider", "-p", default="auto", help="搜索服务商 (serper/duckduckgo/auto)")
+@click.option("--crawl", "-c", type=int, default=0, help="同时爬取前 N 个结果")
+@click.option("--llm", "-l", default="", help="LLM 提供者 (如 openai/gpt-4o)，对结果做 AI 总结")
+def search_cmd(query: str, num: int, provider: str, crawl: int, llm: str) -> None:
+    import asyncio, json as json_mod
+    from apexcrawler.search import search_web
+    
+    results = asyncio.run(search_web(query=query, num=num, provider=provider))
+    if not results:
+        click.echo("未找到搜索结果", err=True)
+        return
+    
+    click.echo(f"搜索结果: {query}\n")
+    for r in results[:num]:
+        click.echo(f"  {r.position}. {r.title}")
+        click.echo(f"     {r.link}")
+        if r.snippet:
+            click.echo(f"     {r.snippet[:120]}...")
+        click.echo()
+    
+    # Optional: crawl top N results
+    if crawl > 0:
+        click.echo(f"--- 正在爬取前 {min(crawl, len(results))} 个结果 ---\n")
+        from apexcrawler.get import get
+        for r in results[:crawl]:
+            click.echo(f"=== {r.title} ===")
+            try:
+                content = get(r.link, timeout=15)
+                if content:
+                    click.echo(content[:1000])
+            except Exception as e:
+                click.echo(f"  抓取失败: {e}", err=True)
+            click.echo()
+    
+    # Optional: LLM summary
+    if llm:
+        click.echo(f"--- LLM 总结 (provider: {llm}) ---\n")
+        try:
+            from apexcrawler.extraction.llm_extract import LLMConfig, extract_with_llm
+            api_token = __import__('os').environ.get("OPENAI_API_KEY", "")
+            config = LLMConfig(provider=llm, api_token=api_token, instruction=f"总结以下搜索结果: {query}")
+            text = "\n".join(f"{r.title}: {r.snippet}" for r in results[:num])
+            result = extract_with_llm(text, config)
+            if result.get("success"):
+                click.echo(str(result["data"]))
+        except Exception as e:
+            click.echo(f"  LLM 总结失败: {e}", err=True)
+
+
+# ── interact command ──
+
+@cli.command(name="interact", help="页面交互 — 通过指令序列控制浏览器")
+@click.argument("url", required=True)
+@click.argument("actions_json", required=False, default="")
+@click.option("--script", "-s", type=click.Path(exists=True), help="JSON 动作脚本文件")
+@click.option("--engine", "-e", default="cloaked_v2", help="浏览器引擎")
+@click.option("--output", "-o", default="", help="截图/结果输出目录")
+def interact_cmd(url: str, actions_json: str, script: Optional[str], engine: str, output: str) -> None:
+    """通过 JSON 指令序列控制浏览器交互。
+
+    示例:
+        apex interact https://example.com '[{"type":"click","selector":"#btn"}]'
+        apex interact https://example.com --script actions.json
+        apex interact https://example.com --script actions.json --output ./results
+    """
+    import asyncio, json as json_mod
+
+    # Parse actions
+    actions = []
+    if script:
+        with open(script) as f:
+            actions = json_mod.load(f)
+    elif actions_json:
+        actions = json_mod.loads(actions_json)
+    else:
+        click.echo("请提供 --script 或 JSON 动作序列", err=True)
+        return
+
+    import os
+    if output:
+        os.makedirs(output, exist_ok=True)
+
+    async def _run():
+        from apexcrawler.engines.cloaked_v2 import CloakedV2Engine
+        from apexcrawler.interact import execute_actions
+
+        engine_inst = CloakedV2Engine(headless=False)
+        await engine_inst.launch()
+        try:
+            page = await engine_inst.navigate(url)
+            click.echo(f"已导航到: {url}")
+
+            results = await execute_actions(page, actions)
+
+            click.echo(f"\n交互完成，共 {len(results)} 步结果:\n")
+            for r in results:
+                status = "OK" if "result" in r else "FAIL"
+                click.echo(f"  [{status}] 步骤 {r['step']}: {r['type']}")
+                if "result" in r:
+                    click.echo(f"     结果: {json_mod.dumps(r['result'], ensure_ascii=False)[:200]}")
+                if "error" in r:
+                    click.echo(f"     错误: {r['error']}")
+        finally:
+            await engine_inst.close()
+
+    asyncio.run(_run())
+
+
 # ── dashboard command ──────────────────────────────────────
 
 @cli.command(name="dashboard", help="启动 Web 监控面板")
@@ -1764,6 +1877,49 @@ def novel_download(url: str, chapters: str, output: str, fmt: str) -> None:
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         raise click.Abort()
+
+
+# ── agent command ──
+
+@cli.command(name="agent", help="AI 自主研究助手 — 搜索、爬取、提取、总结")
+@click.argument("query", required=True)
+@click.option("--llm", "-l", default="openai/gpt-4o", help="LLM 提供者")
+@click.option("--max-steps", "-m", type=int, default=10, help="最大推理步数")
+@click.option("--verbose", "-v", is_flag=True, default=False, help="显示详细执行过程")
+def agent_cmd(query: str, llm: str, max_steps: int, verbose: bool) -> None:
+    """使用 AI 自主完成网页研究任务。
+    
+    示例:
+        apex agent "搜索 Python 爬虫框架并对比它们的优缺点"
+        apex agent "分析 example.com 的产品定价方案"
+    """
+    import asyncio, json as json_mod
+    
+    async def _run():
+        from apexcrawler.agent import run_agent
+        
+        click.echo(f"🤖 AI Agent 启动中...\n")
+        
+        result = await run_agent(
+            query=query,
+            llm_provider=llm,
+            max_steps=max_steps,
+        )
+        
+        if verbose and result.get("steps"):
+            click.echo("--- 执行过程 ---\n")
+            for s in result["steps"]:
+                icon = {"search_web": "🔍", "crawl_page": "🌐", "extract_data": "📊", 
+                       "summarize": "📝", "answer": "✅"}.get(s.get("type", ""), "➡️")
+                click.echo(f"  {icon} 步骤 {s['step']}: {s.get('type', '')}")
+                if "args" in s:
+                    click.echo(f"     参数: {json_mod.dumps(s['args'], ensure_ascii=False)[:200]}")
+                click.echo()
+        
+        click.echo("--- 最终结果 ---\n")
+        click.echo(result.get("answer", "无结果"))
+    
+    asyncio.run(_run())
 
 
 # ── Entry point ────────────────────────────────────────────
