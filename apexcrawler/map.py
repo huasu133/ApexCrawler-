@@ -77,13 +77,16 @@ async def parse_sitemap(url: str) -> List[str]:
     if sitemap_tags:
         # It's a sitemap index — recursively parse sub-sitemaps
         for loc in sitemap_tags:
-            sub_urls = await parse_sitemap(loc.text.strip())
-            urls.extend(sub_urls)
+            loc_text = (loc.text or "").strip()
+            if loc_text:
+                sub_urls = await parse_sitemap(loc_text)
+                urls.extend(sub_urls)
     else:
         # Regular sitemap — extract URLs
         for loc in root.findall(f".//{ns}loc"):
-            if loc.text:
-                urls.append(loc.text.strip())
+            loc_text = (loc.text or "").strip()
+            if loc_text:
+                urls.append(loc_text)
     
     return urls
 
@@ -94,7 +97,9 @@ async def discover_via_crawl(domain: str, max_pages: int = 30) -> List[str]:
     parsed = urlparse(base_url)
     base_domain = parsed.netloc
     
-    to_visit = [base_url]
+    import collections
+    
+    to_visit = collections.deque([base_url])
     visited: Set[str] = set()
     urls: List[str] = []
     
@@ -105,7 +110,7 @@ async def discover_via_crawl(domain: str, max_pages: int = 30) -> List[str]:
         return []
     
     while to_visit and len(visited) < max_pages:
-        url = to_visit.pop(0)
+        url = to_visit.popleft()
         if url in visited:
             continue
         visited.add(url)
@@ -124,8 +129,10 @@ async def discover_via_crawl(domain: str, max_pages: int = 30) -> List[str]:
             if parsed_url.netloc and parsed_url.netloc != base_domain:
                 continue
             
-            # Clean URL
+            # Clean URL — preserve path and query for uniqueness
             clean = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
+            if parsed_url.query:
+                clean += f"?{parsed_url.query}"
             if clean.endswith("/"):
                 clean = clean[:-1]
             

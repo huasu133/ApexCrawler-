@@ -3,9 +3,9 @@ __pycache__/
 *.pyc
 .venv/
 venv/
-*.txt
-*.png
-*.html
+!requirements.txt
 Book *.txt
 我是*.txt
+*.png
+*.html
 .workbuddy/

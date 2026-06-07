@@ -686,7 +686,7 @@ async def batch_crawl(urls: str, engine: Optional[str] = None, fast: bool = Fals
         url_list = json.loads(urls) if isinstance(urls, str) else urls
 
         if not isinstance(url_list, list):
-            return json_mod.dumps({"error": "urls must be a JSON array"}, ensure_ascii=False)
+            return json.dumps({"error": "urls must be a JSON array"}, ensure_ascii=False)
 
         # Limit to 20 concurrent URLs
         url_list = url_list[:20]
@@ -709,7 +709,7 @@ async def batch_crawl(urls: str, engine: Optional[str] = None, fast: bool = Fals
                 except Exception as e:
                     results.append({"url": target_url, "error": str(e)})
 
-            return json_mod.dumps(
+            return json.dumps(
                 {
                     "total": len(url_list),
                     "success_count": sum(1 for r in results if r.get("status_code", 0) == 200),

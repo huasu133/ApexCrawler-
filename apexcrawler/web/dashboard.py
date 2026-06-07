@@ -14,6 +14,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from pydantic import BaseModel, validator
+
 from apexcrawler.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
@@ -73,7 +75,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/metrics")
     async def metrics(_=Depends(_require_api_key)):
-        raw = tm.get_metrics()
+        raw = await tm.get_metrics()
         # Ensure all status keys exist for the frontend
         result = {
             "total": raw.get("total", 0),
@@ -132,7 +134,7 @@ def create_app() -> FastAPI:
     async def sse_events(_=Depends(_require_api_key)):
         async def event_generator():
             while True:
-                raw = tm.get_metrics()
+                raw = await tm.get_metrics()
                 payload = {
                     "total": raw.get("total", 0),
                     "pending": raw.get("pending", 0),

@@ -82,9 +82,19 @@ async def _execute_single(page, action: Dict[str, Any]):
         data = await page.screenshot()
         path = action.get("path", "")
         if path and data:
-            with open(path, "wb") as f:
-                f.write(data)
-            return {"path": path, "size": len(data)}
+            import os
+            # 路径遍历防护：只允许写入当前目录或 output 目录
+            safe_path = os.path.normpath(os.path.abspath(path))
+            allowed_base = os.path.abspath(os.path.join(os.getcwd(), "output"))
+            if not safe_path.startswith(os.path.abspath(os.getcwd())) and not safe_path.startswith(allowed_base):
+                return {"error": f"Path not allowed: {path}"}
+            os.makedirs(os.path.dirname(safe_path), exist_ok=True)
+            try:
+                with open(safe_path, "wb") as f:
+                    f.write(data)
+                return {"path": safe_path, "size": len(data)}
+            except (OSError, PermissionError) as e:
+                return {"error": f"Failed to write screenshot: {e}"}
         return {"size": len(data) if data else 0}
 
     elif action_type == "evaluate":

@@ -2,7 +2,10 @@
 from __future__ import annotations
 import json
 import logging
+import os
+import re
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +86,6 @@ async def run_agent(query: str, llm_provider: str = "openai/gpt-4o",
     Returns:
         Dict with "answer" (final answer) and "steps" (execution trace).
     """
-    import os
     if not api_token:
         api_token = os.environ.get("OPENAI_API_KEY", "")
     
@@ -95,17 +97,14 @@ async def run_agent(query: str, llm_provider: str = "openai/gpt-4o",
     steps = []
     
     for step in range(max_steps):
-        # Call LLM
         llm_response = await _call_llm(messages, llm_provider, api_token)
         content = llm_response.get("content", "")
         tool_calls = llm_response.get("tool_calls", [])
         
         if not tool_calls:
-            # LLM returned final answer
             steps.append({"step": step, "type": "answer", "content": content})
             return {"answer": content, "steps": steps}
         
-        # Execute tool calls
         for tc in tool_calls:
             func_name = tc.get("function", {}).get("name", "")
             func_args_str = tc.get("function", {}).get("arguments", "{}")
@@ -114,9 +113,9 @@ async def run_agent(query: str, llm_provider: str = "openai/gpt-4o",
             except json.JSONDecodeError:
                 func_args = {}
             
-            logger.info(f"Step {step}: Agent calls {func_name}({func_args})")
+            logger.info(f"Step {step}: Agent calls {func_name}")
             
-            result = await _execute_tool(func_name, func_args)
+            result = await _execute_tool(func_name, func_args, api_token)
             result_str = json.dumps(result, ensure_ascii=False)[:3000]
             
             messages.append({"role": "assistant", "content": f"Calling {func_name}..."})
@@ -177,7 +176,27 @@ async def _call_llm(messages: List[Dict], provider: str, api_token: str) -> Dict
         return {"content": f"Error calling LLM: {e}", "tool_calls": []}
 
 
-async def _execute_tool(name: str, args: Dict) -> Any:
+def _is_safe_url(url: str) -> bool:
+    """检查 URL 是否安全（防止 SSRF 攻击内网）。"""
+    try:
+        parsed = urlparse(url)
+        import ipaddress
+        host = parsed.hostname or ""
+        # 过滤 localhost 和内网地址
+        if host in ("localhost", "127.0.0.1", "0.0.0.0"):
+            return False
+        try:
+            addr = ipaddress.ip_address(host)
+            if addr.is_private or addr.is_loopback or addr.is_link_local:
+                return False
+        except ValueError:
+            pass  # 域名，不阻止
+        return True
+    except Exception:
+        return False
+
+
+async def _execute_tool(name: str, args: Dict, api_token: str = "") -> Any:
     """Execute a tool and return its result."""
     if name == "search_web":
         try:
@@ -192,12 +211,16 @@ async def _execute_tool(name: str, args: Dict) -> Any:
     
     elif name == "crawl_page":
         try:
-            from apexcrawler.get import get
             url = args.get("url", "")
-            html = get(url, timeout=15)
+            if not _is_safe_url(url):
+                return {"url": url, "error": "Blocked: URL targets internal/private network"}
+            import httpx
+            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+                resp = await client.get(url, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                })
+                html = resp.text
             if html:
-                # Strip HTML tags for cleaner text
-                import re
                 text = re.sub(r'<[^>]+>', ' ', html)
                 text = re.sub(r'\s+', ' ', text).strip()
                 return {"url": url, "content": text[:5000]}
@@ -208,10 +231,9 @@ async def _execute_tool(name: str, args: Dict) -> Any:
     elif name == "extract_data":
         try:
             from apexcrawler.extraction.llm_extract import LLMConfig, extract_with_llm
-            import os
             config = LLMConfig(
                 provider="openai/gpt-4o",
-                api_token=os.environ.get("OPENAI_API_KEY", ""),
+                api_token=api_token or os.environ.get("OPENAI_API_KEY", ""),
                 instruction=args.get("schema", "提取关键信息"),
             )
             result = extract_with_llm(args.get("text", ""), config)
@@ -222,10 +244,9 @@ async def _execute_tool(name: str, args: Dict) -> Any:
     elif name == "summarize":
         try:
             from apexcrawler.extraction.llm_extract import LLMConfig, extract_with_llm
-            import os
             config = LLMConfig(
                 provider="openai/gpt-4o",
-                api_token=os.environ.get("OPENAI_API_KEY", ""),
+                api_token=api_token or os.environ.get("OPENAI_API_KEY", ""),
                 instruction=args.get("instruction", "总结要点"),
             )
             result = extract_with_llm(args.get("text", ""), config)

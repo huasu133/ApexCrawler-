@@ -6,6 +6,7 @@ enabling dependency inversion and testability.
 
 from __future__ import annotations
 
+import json
 from typing import Protocol, runtime_checkable, TypeVar, Generic, Any, Optional
 
 T = TypeVar("T", covariant=True)
@@ -20,12 +21,17 @@ class PageInteractionsMixin:
     不支持原生交互的引擎（如 vanilla），会通过 JS evaluate() 降级。
     """
 
+    def _js_str(self, value: str) -> str:
+        """安全地将 Python 字符串转为 JS 字符串字面量。"""
+        return json.dumps(value)
+
     async def click(self, selector: str, **kwargs) -> None:
-        await self.evaluate(f"document.querySelector('{selector}')?.click()")
+        await self.evaluate(f"document.querySelector({self._js_str(selector)})?.click()")
 
     async def fill(self, selector: str, value: str, **kwargs) -> None:
-        escaped = value.replace("'", "\\'")
-        await self.evaluate(f"document.querySelector('{selector}')?.value = '{escaped}'")
+        await self.evaluate(
+            f"document.querySelector({self._js_str(selector)})?.value = {self._js_str(value)}"
+        )
 
     async def scroll(self, x: int = 0, y: int = 500) -> None:
         await self.evaluate(f"window.scrollTo({x}, {y})")
@@ -34,27 +40,34 @@ class PageInteractionsMixin:
         import asyncio
         deadline = asyncio.get_event_loop().time() + timeout / 1000
         while asyncio.get_event_loop().time() < deadline:
-            result = await self.evaluate(f"document.querySelector('{selector}') !== null")
+            js_sel = self._js_str(selector)
+            result = await self.evaluate(f"document.querySelector({js_sel}) !== null")
             if result:
                 return True
             await asyncio.sleep(0.1)
         return False
 
     async def get_attribute(self, selector: str, attr: str) -> Optional[str]:
-        return await self.evaluate(f"document.querySelector('{selector}')?.getAttribute('{attr}')")
+        return await self.evaluate(
+            f"document.querySelector({self._js_str(selector)})?.getAttribute({self._js_str(attr)})"
+        )
 
     async def text_content(self, selector: str) -> Optional[str]:
-        return await self.evaluate(f"document.querySelector('{selector}')?.textContent")
+        return await self.evaluate(
+            f"document.querySelector({self._js_str(selector)})?.textContent"
+        )
 
     async def press(self, key: str) -> None:
+        js_key = self._js_str(key)
         await self.evaluate(f"""
-            document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', {{key: '{key}'}}));
-            document.activeElement?.dispatchEvent(new KeyboardEvent('keyup', {{key: '{key}'}}));
+            document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', {{key: {js_key}}}));
+            document.activeElement?.dispatchEvent(new KeyboardEvent('keyup', {{key: {js_key}}}));
         """)
 
     async def hover(self, selector: str) -> None:
+        js_sel = self._js_str(selector)
         await self.evaluate(f"""
-            const el = document.querySelector('{selector}');
+            const el = document.querySelector({js_sel});
             if (el) {{
                 el.dispatchEvent(new MouseEvent('mouseover', {{bubbles: true}}));
                 el.dispatchEvent(new MouseEvent('mouseenter', {{bubbles: true}}));
@@ -62,9 +75,11 @@ class PageInteractionsMixin:
         """)
 
     async def select_option(self, selector: str, value: str) -> None:
+        js_sel = self._js_str(selector)
+        js_val = self._js_str(value)
         await self.evaluate(f"""
-            const el = document.querySelector('{selector}');
-            if (el) {{ el.value = '{value}'; el.dispatchEvent(new Event('change', {{bubbles: true}})); }}
+            const el = document.querySelector({js_sel});
+            if (el) {{ el.value = {js_val}; el.dispatchEvent(new Event('change', {{bubbles: true}})); }}
         """)
 
 
