@@ -178,6 +178,7 @@ Respond with JSON only:
             "f5_shape": "cloaked",
             "imperva": "playwright",
             "distil": "camoufox",
+            # PyDoll is selected by L1/L2 models for humanized interaction scenarios
         }
         return engine_map.get(vendor, "cloaked")
 

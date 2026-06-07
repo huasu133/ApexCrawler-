@@ -76,11 +76,13 @@ class PatchedEngine(BaseEngine):
 
     def __init__(self, headless: bool = True, viewport: dict | None = None,
                  executable_path: str | None = None,
-                 use_stealth_js: bool = True) -> None:
+                 use_stealth_js: bool = True,
+                 use_undetected: bool = False) -> None:
         self._headless = headless
         self._viewport = viewport or {"width": 1920, "height": 1080}
         self._executable = executable_path
         self._use_stealth_js = use_stealth_js
+        self._use_undetected = use_undetected
         self._browser = None
         self._context = None
         self._page = None
@@ -97,6 +99,27 @@ class PatchedEngine(BaseEngine):
         )
 
     async def launch(self) -> None:
+        if self._use_undetected:
+            try:
+                from .patched_undetected import (
+                    create_undetected_browser,
+                    UndetectedBrowserError,
+                )
+                result = await create_undetected_browser(
+                    headless=self._headless,
+                    stealth_js=_STEALTH_JS if self._use_stealth_js else None,
+                )
+                self._browser = result["browser"]
+                self._context = result["context"]
+                self._page = result["page"]
+                logger.info("PatchedEngine launched with undetected-chromedriver")
+                return
+            except (ImportError, UndetectedBrowserError) as e:
+                logger.warning(
+                    "undetected-chromedriver unavailable, falling back to Playwright: %s",
+                    e,
+                )
+
         try:
             from playwright.async_api import async_playwright
         except ImportError:

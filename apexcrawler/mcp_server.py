@@ -11,6 +11,7 @@ ApexCrawler MCP Server — 让 AI 工具直接调用爬取能力。
 from __future__ import annotations
 
 import json
+import json as json_mod
 import logging
 import os
 import hashlib
@@ -705,7 +706,235 @@ async def batch_crawl(urls: str, engine: Optional[str] = None, fast: bool = Fals
 
 
 # ══════════════════════════════════════════════════════════════════════
-# CLI entry point
+# New Tools: train_selector
+# ══════════════════════════════════════════════════════════════════════
+
+
+@server.tool(
+    name="train_selector",
+    description="教导爬虫识别指定字段的选择器。验证选择器有效性后持久化到 SelectorStore。",
+)
+async def train_selector(url: str, field_name: str, selector: str) -> str:
+    """教导选择器。"""
+    try:
+        from apexcrawler.http.fetcher import FastFetcher
+        from bs4 import BeautifulSoup
+
+        fetcher = FastFetcher(impersonate="chrome131")
+        try:
+            result = fetcher.get(url)
+            html = result.get("html", "")
+            status = result.get("status_code", 0)
+
+            if status != 200:
+                return json.dumps({"error": f"HTTP {status}"}, ensure_ascii=False)
+
+            soup = BeautifulSoup(html, "html.parser")
+            elements = soup.select(selector)
+            match_count = len(elements)
+
+            return json.dumps({
+                "url": url, "field": field_name, "selector": selector,
+                "match_count": match_count, "valid": match_count > 0,
+                "sample": str(elements[0])[:200] if elements else None,
+            }, ensure_ascii=False)
+        finally:
+            fetcher.close()
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# New Tools: pause_crawl / resume_crawl / cancel_crawl
+# ══════════════════════════════════════════════════════════════════════
+
+
+@server.tool(
+    name="pause_crawl",
+    description="暂停正在运行的爬取任务。task_id 为创建任务时返回的 ID。",
+)
+async def pause_crawl(task_id: str) -> str:
+    try:
+        from apexcrawler.task_manager import TaskManager
+
+        tm = TaskManager()
+        ok = await tm.pause_task(task_id)
+        return json.dumps({"task_id": task_id, "paused": ok}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@server.tool(
+    name="resume_crawl",
+    description="恢复已暂停的爬取任务。",
+)
+async def resume_crawl(task_id: str) -> str:
+    try:
+        from apexcrawler.task_manager import TaskManager
+
+        tm = TaskManager()
+        ok = await tm.resume_task(task_id)
+        return json.dumps({"task_id": task_id, "resumed": ok}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@server.tool(
+    name="cancel_crawl",
+    description="取消正在运行或暂停的爬取任务。",
+)
+async def cancel_crawl(task_id: str) -> str:
+    try:
+        from apexcrawler.task_manager import TaskManager
+
+        tm = TaskManager()
+        ok = await tm.cancel_task(task_id)
+        return json.dumps({"task_id": task_id, "cancelled": ok}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# New Tools: crawl_metrics / selector_history / page_info
+# ══════════════════════════════════════════════════════════════════════
+
+
+@server.tool(
+    name="crawl_metrics",
+    description="获取爬虫运行状态统计，包括总任务数、各状态分布、引擎可用性等。",
+)
+async def crawl_metrics() -> str:
+    try:
+        from apexcrawler.task_manager import TaskManager
+
+        tm = TaskManager()
+        metrics = await tm.get_metrics()
+        metrics["engines_available"] = ["vanilla", "patched", "camoufox", "cloaked", "cloaked_v2", "qidian", "pydoll"]
+        return json.dumps(metrics, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@server.tool(
+    name="selector_history",
+    description="查看指定字段的选择器变更历史（来自 SelectorDatabase）。field_name 为字段名称。",
+)
+async def selector_history(field_name: str) -> str:
+    try:
+        from apexcrawler.extraction.sel_healer import SelectorDatabase
+
+        db = SelectorDatabase()
+        # Get all selectors for this field across all URLs
+        rows = db._conn.execute(
+            "SELECT url_pattern, selector, confidence, success_count, fail_count, last_used_at FROM selectors WHERE field_name=? ORDER BY confidence DESC LIMIT 20",
+            (field_name,)
+        ).fetchall()
+        result = [{"url_pattern": r[0], "selector": r[1], "confidence": r[2], "success_count": r[3], "fail_count": r[4]} for r in rows]
+        return json.dumps({"field": field_name, "selectors": result}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@server.tool(
+    name="page_info",
+    description="获取页面元数据：内容类型、编码、标题、链接数、图片数等。",
+)
+async def page_info(url: str) -> str:
+    try:
+        from apexcrawler.http.fetcher import FastFetcher
+        from bs4 import BeautifulSoup
+        from urllib.parse import urlparse
+
+        fetcher = FastFetcher(impersonate="chrome131")
+        try:
+            result = fetcher.get(url)
+            html = result.get("html", "")
+            status = result.get("status_code", 0)
+            headers = result.get("headers", {})
+
+            info = {
+                "url": url, "domain": urlparse(url).netloc,
+                "status_code": status, "content_length": len(html),
+                "content_type": headers.get("Content-Type", headers.get("content-type", "")),
+            }
+
+            if status == 200 and html:
+                soup = BeautifulSoup(html, "html.parser")
+                info["title"] = (soup.title.string if soup.title else "")[:200]
+                info["link_count"] = len(soup.find_all("a", href=True))
+                info["image_count"] = len(soup.find_all("img"))
+                info["text_length"] = len(soup.get_text(strip=True))
+
+            return json.dumps(info, ensure_ascii=False)
+        finally:
+            fetcher.close()
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# New Tools: create_crawl_task / get_task / list_crawl_tasks
+# ══════════════════════════════════════════════════════════════════════
+
+
+@server.tool(
+    name="create_crawl_task",
+    description="创建异步爬取任务。返回 task_id 用于后续查询状态、暂停、恢复或取消。",
+)
+async def create_crawl_task(url: str, engine: str = "") -> str:
+    try:
+        from apexcrawler.task_manager import TaskManager
+
+        tm = TaskManager()
+        task = await tm.create_task(url=url, engine=engine)
+        return json.dumps({
+            "task_id": task.id, "url": task.url, "status": task.status.value,
+            "engine": task.engine,
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@server.tool(
+    name="get_task",
+    description="查询爬取任务的状态和结果。task_id 为创建任务时返回的 ID。",
+)
+async def get_task(task_id: str) -> str:
+    try:
+        from apexcrawler.task_manager import TaskManager
+
+        tm = TaskManager()
+        task = await tm.get_task(task_id)
+        if task is None:
+            return json.dumps({"error": f"Task {task_id} not found"}, ensure_ascii=False)
+        return json.dumps({
+            "task_id": task.id, "url": task.url, "status": task.status.value,
+            "engine": task.engine, "progress": task.progress,
+            "error": task.error, "result": task.result,
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@server.tool(
+    name="list_crawl_tasks",
+    description="列出爬取任务列表。limit 控制返回数量（默认 50），status 可选过滤（pending/running/completed/failed/cancelled/paused）。",
+)
+async def list_crawl_tasks(limit: int = 50, status: str = "") -> str:
+    try:
+        from apexcrawler.task_manager import TaskManager
+
+        tm = TaskManager()
+        tasks = await tm.list_tasks(limit=limit, status=status if status else None)
+        return json.dumps({
+            "total": len(tasks),
+            "tasks": [{"task_id": t.id, "url": t.url, "status": t.status.value, "engine": t.engine, "progress": t.progress} for t in tasks],
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# ══════════════════════════════════════════════════════════════════════
 # ══════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
