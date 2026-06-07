@@ -451,36 +451,44 @@ class QidianEngine(BaseEngine):
 
     async def _bypass_waf_and_fetch_cookies_async(self) -> list[dict]:
         """
-        异步：使用 CamoufoxEngine 打开起点首页，等待 WAF 通过并提取 Cookie。
+        使用 CloakedV2Engine (Chrome) 打开起点首页，等待 WAF 通过并提取 Cookie。
+
+        腾讯云 WAF 对 Chrome 的兼容性优于 Firefox (Camoufox)，
+        CloakBrowser 的 49 个 C++ 指纹补丁可显著降低被检测风险。
         """
         try:
-            from apexcrawler.engines.camouflaged import CamoufoxEngine
-        except ImportError:
+            from apexcrawler.engines.cloaked_v2 import CloakedV2Engine
+        except ImportError as e:
             raise ImportError(
-                "CamoufoxEngine 未找到，无法执行 WAF 绕过"
-            )
+                "CloakedV2Engine 未找到，请确保 cloakbrowser 已安装"
+            ) from e
 
-        engine = CamoufoxEngine(
+        engine = CloakedV2Engine(
             headless=self.headless,
             viewport={"width": 1920, "height": 1080},
         )
         try:
             await engine.launch()
-            await engine.navigate(self.QIDIAN_URL)
+            # 使用带 cn_win_chrome_120 配置的 DeviceProfile
+            page = await engine.navigate(self.QIDIAN_URL)
 
-            # 等待页面稳定（额外等待 WAF 完全通过）
-            if engine._page:
+            # 等待 WAF 通过（最多 60s）
+            if page:
                 try:
-                    await self._wait_for_waf_pass(engine._page)
+                    await self._wait_for_waf_pass_async(page, timeout=60)
                 except Exception:
-                    pass
+                    logger.warning("WAF 等待超时，将尝试提取已有 Cookie")
+                # 额外等待确保所有 Cookie 生成
                 await asyncio.sleep(3)
 
-            # 提取 Cookie
-            if engine._context:
-                cookies = await engine._context.cookies()
-                logger.info("CamoufoxEngine 获取到 %d 个 Cookie", len(cookies))
-                return cookies
+            # 通过 CDP 提取 Cookie
+            try:
+                import cloakbrowser
+                cdp_cookies = await page._page.context.cookies()
+                logger.info("CloakBrowser 获取到 %d 个 Cookie", len(cdp_cookies))
+                return cdp_cookies
+            except Exception:
+                pass
             return []
         finally:
             await engine.close()
@@ -578,23 +586,34 @@ class QidianEngine(BaseEngine):
 
         data = resp.get("json") or {}
         chapters: List[Chapter] = []
-        index = 0
 
+        # 尝试从 API JSON 解析
         vs = data.get("data", {}).get("vs", [])
-        for volume in vs:
-            cs = volume.get("cs", [])
-            for ch in cs:
-                index += 1
-                chapter = Chapter(
-                    chapter_id=int(ch.get("id", 0)),
-                    book_id=book_id,
-                    title=ch.get("cN", ""),
-                    index=index,
-                    is_vip=ch.get("vip", 0) == 1,
-                    word_count=int(ch.get("cnt", 0)),
-                    url=f"https://vipreader.qidian.com/chapter/{book_id}/{ch.get('id', 0)}",
-                )
-                chapters.append(chapter)
+        if vs:
+            index = 0
+            for volume in vs:
+                cs = volume.get("cs", [])
+                for ch in cs:
+                    index += 1
+                    chapter = Chapter(
+                        chapter_id=int(ch.get("id", 0)),
+                        book_id=book_id,
+                        title=ch.get("cN", ""),
+                        index=index,
+                        is_vip=ch.get("vip", 0) == 1,
+                        word_count=int(ch.get("cnt", 0)),
+                        url=f"https://vipreader.qidian.com/chapter/{book_id}/{ch.get('id', 0)}",
+                    )
+                    chapters.append(chapter)
+
+        # API 返回空 → 降级到 HTML 解析
+        if not chapters:
+            logger.info("API 返回空目录，降级到 HTML 页面解析 (book_id=%d)", book_id)
+            try:
+                chapters = self._fetch_catalog_via_html(book_id)
+                logger.info("HTML 解析获得 %d 章", len(chapters))
+            except Exception as e:
+                logger.warning("HTML 解析也失败: %s", e)
 
         self._catalog_cache[book_id] = CatalogCache(
             book_id=book_id, chapters=chapters
@@ -602,6 +621,128 @@ class QidianEngine(BaseEngine):
 
         logger.info("获取完成: book_id=%d, 共 %d 章", book_id, len(chapters))
         return chapters
+
+    # ── HTML 解析降级 ─────────────────────────────────────────────
+
+    def _fetch_catalog_via_html(self, book_id: int) -> List[Chapter]:
+        """
+        通过解析书籍页面 HTML 获取章节列表（API 失败时的降级方案）。
+        使用 curl_cffi 直接请求 book.qidian.com/info/{book_id}。
+        """
+        import re
+        from urllib.parse import urljoin
+
+        url = f"https://book.qidian.com/info/{book_id}"
+        session = self._get_curl_session()
+        resp = self._curl_get(session, url)
+
+        if resp["status_code"] != 200:
+            logger.error("HTML 页面获取失败: HTTP %d", resp["status_code"])
+            return []
+
+        html = resp.get("text", "")
+        chapters: List[Chapter] = []
+
+        # 策略 1: 从页面内嵌 JSON 提取 (最常见)
+        try:
+            # 查找章节列表 JSON 数据
+            for pattern in [
+                r'var\s+chapterData\s*=\s*({.*?});',
+                r'"cs":\s*(\[.*?\])\s*}',
+                r'chapterList\s*=\s*({.*?});',
+            ]:
+                match = re.search(pattern, html, re.DOTALL)
+                if match:
+                    logger.debug("匹配到章节数据模式: %s", pattern[:30])
+                    break
+
+            # 从 volume/chapter 结构提取
+            vol_pattern = r'"cs":\s*\[(.*?)\](?=\s*,\s*")'
+            vol_matches = re.findall(vol_pattern, html, re.DOTALL)
+            if vol_matches:
+                index = 0
+                for vol_data in vol_matches:
+                    ch_pattern = r'\{\s*"id"\s*:\s*"(\d+)"[^}]*"cN"\s*:\s*"([^"]*)"[^}]*"vip"\s*:\s*(\d)'
+                    for m in re.finditer(ch_pattern, vol_data):
+                        index += 1
+                        ch_id = m.group(1)
+                        title = m.group(2)
+                        is_vip = int(m.group(3)) == 1
+                        chapters.append(Chapter(
+                            chapter_id=int(ch_id),
+                            book_id=book_id,
+                            title=title,
+                            index=index,
+                            is_vip=is_vip,
+                            url=f"https://vipreader.qidian.com/chapter/{book_id}/{ch_id}",
+                        ))
+        except Exception as e:
+            logger.debug("HTML 策略1提取失败: %s", e)
+
+        # 策略 2: DOM 解析 BeautifulSoup
+        if not chapters:
+            try:
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(html, "html.parser")
+                for link in soup.select("ul#chapter-list a, .chapter-list a, a[href*='/chapter/']"):
+                    href = link.get("href", "")
+                    ch_id_match = re.search(r'/(\d+)\.html$', href)
+                    if ch_id_match and f"/{book_id}/" in href:
+                        chapters.append(Chapter(
+                            chapter_id=int(ch_id_match.group(1)),
+                            book_id=book_id,
+                            title=link.get_text(strip=True),
+                            index=len(chapters) + 1,
+                            is_vip=False,
+                            url=urljoin("https://book.qidian.com", href),
+                        ))
+            except Exception as e:
+                logger.debug("HTML 策略2提取失败: %s", e)
+
+        # 策略 3: 使用 CloakBrowser 渲染后提取
+        if not chapters:
+            try:
+                import asyncio
+                ch = asyncio.run(self._fetch_catalog_via_browser(book_id))
+                chapters = ch
+            except Exception as e:
+                logger.debug("HTML 策略3(浏览器)失败: %s", e)
+
+        return chapters
+
+    async def _fetch_catalog_via_browser(self, book_id: int) -> List[Chapter]:
+        """使用 CloakBrowser 渲染页面后提取章节列表。"""
+        from apexcrawler.engines.cloaked_v2 import CloakedV2Engine
+        engine = CloakedV2Engine(headless=True)
+        try:
+            await engine.launch()
+            page = await engine.navigate(f"https://book.qidian.com/info/{book_id}")
+            html = await page.content
+
+            import re
+            chapters = []
+            vol_pattern = r'"cs":\s*\[(.*?)\](?=\s*,\s*")'
+            vol_matches = re.findall(vol_pattern, html, re.DOTALL)
+            if vol_matches:
+                index = 0
+                for vol_data in vol_matches:
+                    ch_pattern = r'\{\s*"id"\s*:\s*"(\d+)"[^}]*"cN"\s*:\s*"([^"]*)"[^}]*"vip"\s*:\s*(\d)'
+                    for m in re.finditer(ch_pattern, vol_data):
+                        index += 1
+                        ch_id = m.group(1)
+                        title = m.group(2)
+                        is_vip = int(m.group(3)) == 1
+                        chapters.append(Chapter(
+                            chapter_id=int(ch_id),
+                            book_id=book_id,
+                            title=title,
+                            index=index,
+                            is_vip=is_vip,
+                            url=f"https://vipreader.qidian.com/chapter/{book_id}/{ch_id}",
+                        ))
+            return chapters
+        finally:
+            await engine.close()
 
     # ── 正文提取 ──────────────────────────────────────────────────────
 
