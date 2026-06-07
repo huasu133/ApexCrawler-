@@ -750,6 +750,28 @@ class QidianEngine(BaseEngine):
         finally:
             await engine.close()
 
+    async def _fetch_chapter_via_browser(self, url: str) -> str:
+        """使用 CloakBrowser 渲染章节页面并提取正文。"""
+        import cloakbrowser
+        browser = await cloakbrowser.launch_async(headless=False)
+        try:
+            context = await browser.new_context()
+            page = await context.new_page()
+            await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            await page.wait_for_load_state("networkidle", timeout=30_000)
+            await asyncio.sleep(3)
+
+            # 通过 evaluate 提取正文
+            text = await page.evaluate("""() => {
+                const content = document.querySelector('.read-content, #chapter-content, .content, [class*=\"content\"]');
+                if (content) return content.innerText.trim();
+                // Fallback: get all visible text
+                return document.body.innerText.trim();
+            }""")
+            return text or ""
+        finally:
+            await browser.close()
+
     # ── 正文提取 ──────────────────────────────────────────────────────
 
     def fetch_chapter(self, chapter_info: Chapter) -> Chapter:
@@ -771,11 +793,26 @@ class QidianEngine(BaseEngine):
         resp = self._curl_get(session, url)
 
         if resp["status_code"] != 200:
-            logger.error(
-                "获取章节失败: HTTP %d (chapter_id=%d)",
+            logger.warning(
+                "HTTP 获取失败: %d，降级到 CloakBrowser 渲染 (chapter_id=%d)",
                 resp["status_code"],
                 chapter_info.chapter_id,
             )
+            # 使用 CloakBrowser 渲染章节页面
+            try:
+                import cloakbrowser
+                import asyncio
+                browser = asyncio.run(self._fetch_chapter_via_browser(url))
+                if browser:
+                    chapter_info.content = browser
+                    chapter_info.fetched_at = datetime.now()
+                    if not chapter_info.word_count:
+                        chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", browser))
+                        chapter_info.word_count = chinese_chars
+                    logger.info("浏览器渲染获取章节成功: %d 字", chapter_info.word_count)
+                    return chapter_info
+            except Exception as e:
+                logger.warning("浏览器渲染也失败: %s", e)
             return chapter_info
 
         html = resp.get("text", "")
