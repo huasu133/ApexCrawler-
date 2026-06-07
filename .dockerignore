@@ -1,0 +1,11 @@
+.git/
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.txt
+*.png
+*.html
+Book *.txt
+我是*.txt
+.workbuddy/

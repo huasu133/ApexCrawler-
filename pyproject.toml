@@ -28,9 +28,13 @@ dependencies = [
     "structlog>=24.4",
     "rich>=13.9",
     "cloakbrowser>=0.3",
+    "uvicorn>=0.30",
+    "fastapi>=0.110",
+    "sse-starlette>=2.0",
 ]
 
 [project.optional-dependencies]
+web = ["uvicorn", "fastapi", "sse-starlette"]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
