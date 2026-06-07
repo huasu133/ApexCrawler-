@@ -934,6 +934,58 @@ async def list_crawl_tasks(limit: int = 50, status: str = "") -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# Novel tools
+# ══════════════════════════════════════════════════════════════════════
+
+
+@server.tool(
+    name="novel_info",
+    description="获取小说信息：目录、章节数、免费/付费状态。支持起点、番茄、笔趣阁等站点。",
+)
+async def novel_info(url: str) -> str:
+    import json, logging
+    logging.getLogger("apexcrawler").setLevel(logging.WARNING)
+    try:
+        from apexcrawler.novel.engine import NovelEngine
+        ne = NovelEngine()
+        book = ne.info(url)
+        result = {
+            "book_id": book.book_id,
+            "total": len(book.chapters),
+            "free_count": sum(1 for c in book.chapters if not c.is_vip),
+            "chapters": [
+                {"index": c.index, "title": c.title, "is_vip": c.is_vip}
+                for c in book.chapters[:50]
+            ],
+        }
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@server.tool(
+    name="novel_download",
+    description="下载小说章节到本地文件。url 为小说页面链接，chapters 可选章节范围如 '1-50'。返回文件路径。",
+)
+async def novel_download(url: str, chapters: str = "") -> str:
+    import json, logging
+    logging.getLogger("apexcrawler").setLevel(logging.WARNING)
+    try:
+        from apexcrawler.novel.engine import NovelEngine
+        start, end = 1, 0
+        if chapters:
+            parts = chapters.split("-")
+            start = int(parts[0])
+            if len(parts) > 1:
+                end = int(parts[1])
+        ne = NovelEngine()
+        path = ne.download(url, start=start, end=end)
+        return json.dumps({"file": path, "chapters_range": f"{start}-{end or 'all'}"}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# ══════════════════════════════════════════════════════════════════════
 # ══════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":

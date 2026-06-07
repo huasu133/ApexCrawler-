@@ -27,6 +27,7 @@ from urllib.parse import urlparse
 
 import click
 
+from apexcrawler.novel.engine import NovelEngine
 from ..config.schema import Settings
 from ..core.exceptions import ConfigurationError
 
@@ -1435,29 +1436,25 @@ def get_cmd(ctx: click.Context, url: str, engine: str, proxy: str, timeout: int,
         apex get https://example.com -o text
     """
     import re
-    # Detect Qidian book URLs
-    qidian_match = re.search(r'(?:book\.)?qidian\.com/(?:info|book)/(\d+)', url)
-    if qidian_match:
-        book_id = int(qidian_match.group(1))
-        click.echo(f"Detected Qidian novel (book_id={book_id})")
-        from apexcrawler.engines.qidian import QidianEngine
-        eng = QidianEngine(headless=True)
-        chapters = eng.fetch_catalog(book_id)
-        if not chapters:
-            click.echo("Failed to fetch catalog. Try with --engine cloaked_v2", err=True)
-            # Fall back to regular get
-        else:
-            # Show chapter list
-            free = [c for c in chapters if not c.is_vip]
-            click.echo(f"Total: {len(chapters)} chapters ({len(free)} free)")
-            # Fetch first free chapter as preview
-            if free:
-                ch = eng.fetch_chapter(free[0])
-                if ch and ch.content:
+    # Detect novel platform URLs (Qidian, Fanqie, etc.)
+    novel_domains = ["qidian.com", "fanqienovel.com", "jinjiang.com", "biquge", "69shu"]
+    if any(d in url for d in novel_domains):
+        try:
+            ne = NovelEngine()
+            book = ne.info(url)
+            click.echo(f"Novel: {book.book_id} ({len(book.chapters)} chapters)")
+            # Show first chapter as preview
+            free_chapters = [c for c in book.chapters if not c.is_vip]
+            if free_chapters:
+                ch = free_chapters[0]
+                text = ne.chapter(ch.url if ch.url else url)
+                if text:
                     click.echo(f"\n=== {ch.title} ===\n")
-                    click.echo(ch.content[:2000])
-                    click.echo(f"\n... ({len(ch.content)} chars total)")
-            return
+                    click.echo(text[:2000])
+                    return
+        except Exception as e:
+            logger.debug("Novel detection failed: %s", e)
+            # Fall through to regular get
 
     try:
         from apexcrawler.get import get
@@ -1904,6 +1901,75 @@ def checkpoints_clear(checkpoint_dir: str | None, clear_all: bool, job_id: str |
     else:
         click.echo("Specify a job_id or use --all to clear all checkpoints.", err=True)
         sys.exit(1)
+
+
+# ── novel command ──────────────────────────────────────────
+
+@cli.group(name="novel", help="小说爬取 — 支持起点/番茄/笔趣阁等站点")
+def novel_group():
+    """小说爬取相关命令。
+
+    示例:
+        apex novel info https://book.qidian.com/info/107580
+        apex novel download https://book.qidian.com/info/107580
+        apex novel download https://book.qidian.com/info/107580 --chapters 1-100
+    """
+    pass
+
+
+@novel_group.command(name="info", help="获取小说信息和章节列表")
+@click.argument("url", required=True)
+def novel_info(url: str) -> None:
+    """获取小说信息。
+
+    URL 示例:
+        https://book.qidian.com/info/107580
+        https://fanqienovel.com/...
+    """
+    try:
+        ne = NovelEngine()
+        book = ne.info(url)
+        free = sum(1 for c in book.chapters if not c.is_vip)
+        click.echo(f"Book ID: {book.book_id}")
+        click.echo(f"Total: {len(book.chapters)} chapters ({free} free)")
+        click.echo()
+        for c in book.chapters[:20]:
+            tag = " " if not c.is_vip else "$"
+            click.echo(f"  {c.index:4d}. [{tag}] {c.title}")
+        if len(book.chapters) > 20:
+            click.echo(f"  ... ({len(book.chapters) - 20} more)")
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        raise click.Abort()
+
+
+@novel_group.command(name="download", help="下载小说章节")
+@click.argument("url", required=True)
+@click.option("--chapters", "-c", default="", help="章节范围 (1-100, 50-200)")
+@click.option("--output", "-o", default="", help="输出文件路径")
+@click.option("--format", "fmt", type=click.Choice(["txt", "epub"]), default="txt", help="输出格式")
+def novel_download(url: str, chapters: str, output: str, fmt: str) -> None:
+    """下载小说章节到本地文件。
+
+    示例:
+        apex novel download https://book.qidian.com/info/107580
+        apex novel download https://book.qidian.com/info/107580 -c 1-100
+        apex novel download https://book.qidian.com/info/107580 -o 凡人修仙传.txt
+    """
+    try:
+        start, end = 1, 0
+        if chapters:
+            parts = chapters.split("-")
+            start = int(parts[0])
+            if len(parts) > 1:
+                end = int(parts[1])
+
+        ne = NovelEngine()
+        result = ne.download(url, start=start, end=end, output=fmt)
+        click.echo(f"Saved: {result}")
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        raise click.Abort()
 
 
 # ── Entry point ────────────────────────────────────────────
