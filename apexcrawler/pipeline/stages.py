@@ -99,9 +99,21 @@ class RouteStage:
 
 
 class EvadeStage:
-    """Assigns proxy, User-Agent, TLS profile, and device fingerprint to evade detection."""
+    """Assigns proxy, User-Agent, TLS profile, and device fingerprint to evade detection.
+
+    When a Cloudflare-protected target is detected, this stage will:
+    - Prefer the "camoufox" engine (Firefox-based, better CF compatibility)
+    - Upgrade "vanilla" or "patched" engines to "camoufox" if CF is suspected
+    - Set engine preference metadata for downstream stages
+    """
 
     name = "evade"
+
+    # Engines that lack adequate Cloudflare bypass capability
+    _WEAK_CF_ENGINES = {"vanilla", "patched", "playwright"}
+
+    # Recommended engine for Cloudflare-protected targets
+    _CLOUDFLARE_ENGINE = "camoufox"
 
     def __init__(
         self,
@@ -120,6 +132,22 @@ class EvadeStage:
             self._device_profile = device_profile
 
     async def execute(self, ctx: PipelineContext) -> PipelineContext:
+        # Check for Cloudflare signal from route stage or previous stage results
+        cf_detected = self._check_cloudflare_signal(ctx)
+
+        # If Cloudflare is suspected and current engine is weak, upgrade it
+        if cf_detected and ctx.selected_engine in self._WEAK_CF_ENGINES:
+            old_engine = ctx.selected_engine
+            ctx.selected_engine = self._CLOUDFLARE_ENGINE
+            ctx.route_reason = (
+                f"Cloudflare detected: upgraded {old_engine} → {self._CLOUDFLARE_ENGINE}"
+            )
+            ctx.target_difficulty = max(ctx.target_difficulty, 8)
+            logger.warning(
+                f"[evade] trace={ctx.trace_id} CF detection triggered engine upgrade: "
+                f"{old_engine} → {self._CLOUDFLARE_ENGINE}"
+            )
+
         # Select TLS profile with rotation
         profile = self._router.rotate()
         if profile is None:
@@ -156,9 +184,31 @@ class EvadeStage:
         logger.info(
             f"[evade] trace={ctx.trace_id} profile={profile.name} "
             f"proxy={ctx.proxy or 'none'} ja4={profile.ja4_prefix} "
-            f"device={dp.name}"
+            f"device={dp.name} engine={ctx.selected_engine}"
         )
         return ctx
+
+    def _check_cloudflare_signal(self, ctx: PipelineContext) -> bool:
+        """Check if Cloudflare is suspected based on context signals.
+
+        Examines route reason, target difficulty, and any detection results
+        already stored in the context.
+        """
+        # Check route reason for cloudflare keyword
+        if "cloudflare" in ctx.route_reason.lower():
+            return True
+
+        # Check if difficulty is high (CF targets are usually high)
+        if ctx.target_difficulty >= 9:
+            return True
+
+        # If URL contains cloudflare-related keywords
+        cf_keywords = ["cloudflare", "cf-", "challenge"]
+        target_url = ctx.target_url.lower() if ctx.target_url else ""
+        if any(kw in target_url for kw in cf_keywords):
+            return True
+
+        return False
 
     async def rollback(self, ctx: PipelineContext) -> None:
         ctx.proxy = ""

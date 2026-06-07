@@ -429,3 +429,179 @@ class SignalDetector:
         """Check if any result indicates blocking/challenging."""
         blocking_types = {"block", "captcha", "challenge", "rate_limit"}
         return any(r.detected and r.signal_type in blocking_types for r in results)
+
+
+# ── Cloudflare Dedicated Detector ────────────────────────────
+
+_CLOUDFLARE_PATTERNS = {
+    "headers": [
+        "cf-ray",
+        "cf-chl-out",
+        "cf-chl-bypass",
+        "cf-mitigated",
+        "cf-request-id",
+    ],
+    "html_title": [
+        r"Just a moment\.\.\.",
+        r"Checking your browser",
+        r"Attention Required! \| Cloudflare",
+        r"Please complete the security check to access",
+    ],
+    "html_body": [
+        r"__cf_chl_tk",
+        r"cf-challenge",
+        r"cf-browser-verification",
+        r"/cdn-cgi/challenge-platform/",
+        r"DDoS protection by Cloudflare",
+        r"cloudflare-ip-country",
+        r"cf-error-detect-by",
+        r"_cf_chl_opt",
+        r"cpo\.src\s*=\s*[\x22\x27]/cdn-cgi/challenge-platform",
+        r"challenge-platform.*turnstile",
+    ],
+    "url_fragment": [
+        r"/cdn-cgi/challenge-platform/",
+        r"__cf_chl_f_tk",
+        r"__cf_chl_captcha_tk",
+    ],
+}
+
+
+class CloudflareDetector:
+    """
+    检测 Cloudflare 保护的页面。
+
+    检测特征:
+    - 响应状态码 403 + cf-ray header
+    - 响应体包含 "__cf_chl_tk" 或 "cf-challenge"
+    - 响应体包含 "Just a moment..." 或 "Checking your browser"
+    - 响应体包含 "Attention Required! | Cloudflare"
+    - 页面 URL 包含 "/cdn-cgi/challenge-platform/"
+
+    检测到后返回建议的引擎: "cloaked" (最强反 CF 引擎)
+    """
+
+    RECOMMENDED_ENGINE = "cloaked"
+
+    @classmethod
+    def recommended_engine(cls) -> str:
+        """Return the recommended engine for Cloudflare-protected pages."""
+        return cls.RECOMMENDED_ENGINE
+
+    def detect(self, html: str, headers: dict[str, str], status: int = 200,
+               url: str = "") -> SignalResult:
+        """Detect Cloudflare protection signals.
+
+        Args:
+            html: Page HTML content.
+            headers: HTTP response headers (as dict with lowercased keys).
+            status: HTTP status code.
+            url: The page URL (for URL fragment checks).
+
+        Returns:
+            SignalResult with detection details, including 'recommended_engine'
+            in meta if Cloudflare is detected.
+        """
+        evidence: list[str] = []
+        header_keys_lower = {k.lower() for k in headers}
+
+        # 1. Status code heuristics
+        if status == 403:
+            evidence.append(f"HTTP 403 Forbidden")
+        elif status == 503:
+            evidence.append(f"HTTP 503 Service Unavailable (CF challenge mode)")
+
+        # 2. Header-based detection
+        for h in _CLOUDFLARE_PATTERNS["headers"]:
+            if h.lower() in header_keys_lower:
+                evidence.append(f"Header: {h}={headers.get(h, '')}")
+
+        # 3. HTML title detection
+        for pattern in _CLOUDFLARE_PATTERNS["html_title"]:
+            if re.search(pattern, html, re.IGNORECASE):
+                evidence.append(f"HTML title match: {pattern}")
+
+        # 4. HTML body pattern detection
+        for pattern in _CLOUDFLARE_PATTERNS["html_body"]:
+            if re.search(pattern, html, re.IGNORECASE):
+                evidence.append(f"HTML body match: {pattern}")
+
+        # 5. URL fragment detection
+        if url:
+            for pattern in _CLOUDFLARE_PATTERNS["url_fragment"]:
+                if re.search(pattern, url, re.IGNORECASE):
+                    evidence.append(f"URL match: {pattern}")
+
+        if not evidence:
+            return SignalResult(detected=False, signal_type="block", confidence=0.0)
+
+        # Calculate confidence based on evidence strength
+        confidence = 0.0
+        has_status_evidence = any("HTTP" in e for e in evidence)
+        has_header_evidence = any(e.startswith("Header: cf-") for e in evidence)
+        has_body_evidence = any(e.startswith("HTML body match") or e.startswith("HTML title match") for e in evidence)
+
+        if has_status_evidence and has_header_evidence:
+            confidence = 1.0  # Definite CF block
+        elif has_header_evidence and has_body_evidence:
+            confidence = 0.95
+        elif has_header_evidence:
+            confidence = 0.85
+        elif has_body_evidence:
+            confidence = 0.80
+        else:
+            confidence = 0.70
+
+        return SignalResult(
+            detected=True,
+            signal_type="block",
+            vendor="cloudflare",
+            confidence=confidence,
+            evidence=evidence,
+            meta={
+                "recommended_engine": self.RECOMMENDED_ENGINE,
+                "challenge_type": self._detect_challenge_type(html),
+            },
+        )
+
+    @staticmethod
+    def _detect_challenge_type(html: str) -> str:
+        """Detect the specific Cloudflare challenge type.
+
+        Returns one of: "interactive", "non_interactive", "managed", "embedded", "js_challenge", ""
+        """
+        if "cType: 'non-interactive'" in html:
+            return "non_interactive"
+        if "cType: 'managed'" in html:
+            return "managed"
+        if "cType: 'interactive'" in html:
+            return "interactive"
+        if "challenges.cloudflare.com/turnstile" in html:
+            return "embedded"
+        if "/cdn-cgi/challenge-platform" in html:
+            return "js_challenge"
+        return ""
+
+    @staticmethod
+    def detect_turnstile_presence(html: str) -> bool:
+        """Check if the page contains a Cloudflare Turnstile challenge.
+
+        Detects:
+        - iframe[src*="challenges.cloudflare.com"]
+        - input[name="cf-turnstile-response"]
+        - div.cf-turnstile
+        - script[src*="challenges.cloudflare.com/turnstile"]
+        """
+        patterns = [
+            r"<iframe[^>]*src\s*=\s*[\x22\x27]https?://challenges\.cloudflare\.com",
+            r"<input[^>]*name\s*=\s*[\x22\x27]cf-turnstile-response[\x22\x27]",
+            r"<div[^>]*class\s*=\s*[\x22\x27][^\x22\x27]*cf-turnstile[^\x22\x27]*[\x22\x27]",
+            r"src\s*=\s*[\x22\x27]https?://challenges\.cloudflare\.com/turnstile",
+            r"data-turnstile",
+            r"cf-turnstile-wrapper",
+            r"turnstile\.render",
+        ]
+        for pattern in patterns:
+            if re.search(pattern, html, re.IGNORECASE):
+                return True
+        return False
