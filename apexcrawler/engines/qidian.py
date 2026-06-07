@@ -451,47 +451,34 @@ class QidianEngine(BaseEngine):
 
     async def _bypass_waf_and_fetch_cookies_async(self) -> list[dict]:
         """
-        使用 CloakedV2Engine (Chrome) 打开起点首页，等待 WAF 通过并提取 Cookie。
+        使用 CloakBrowser (Chrome) 直接打开起点首页，等待 WAF 通过并提取 Cookie。
 
-        腾讯云 WAF 对 Chrome 的兼容性优于 Firefox (Camoufox)，
-        CloakBrowser 的 49 个 C++ 指纹补丁可显著降低被检测风险。
+        腾讯云 WAF 的 probe.js 必须运行在非 headless 的 Chrome 环境中。
+        Cookie 获取后立即关闭浏览器，后续请求通过 curl_cffi + Cookie 完成。
         """
+        import cloakbrowser
+
+        logger.info("启动 CloakBrowser 执行 WAF 绕过 (非 headless)...")
+        browser = await cloakbrowser.launch_async(headless=False)
         try:
-            from apexcrawler.engines.cloaked_v2 import CloakedV2Engine
-        except ImportError as e:
-            raise ImportError(
-                "CloakedV2Engine 未找到，请确保 cloakbrowser 已安装"
-            ) from e
+            context = await browser.new_context()
+            page = await context.new_page()
 
-        engine = CloakedV2Engine(
-            headless=False,  # 腾讯云WAF需非headless模式才能通过probe.js检测
-            viewport={"width": 1920, "height": 1080},
-        )
-        try:
-            await engine.launch()
-            # 使用带 cn_win_chrome_120 配置的 DeviceProfile
-            page = await engine.navigate(self.QIDIAN_URL)
+            # 导航到起点首页 (domcontentloaded 即可，无需等 networkidle)
+            await page.goto(self.QIDIAN_URL, wait_until="domcontentloaded", timeout=45_000)
 
-            # 等待 WAF 通过（最多 60s）
-            if page:
-                try:
-                    await self._wait_for_waf_pass_async(page, timeout=60)
-                except Exception:
-                    logger.warning("WAF 等待超时，将尝试提取已有 Cookie")
-                # 额外等待确保所有 Cookie 生成
-                await asyncio.sleep(3)
+            # 等待页面完成加载（WAF 挑战在此期间完成）
+            await page.wait_for_load_state("networkidle", timeout=60_000)
 
-            # 通过 CDP 提取 Cookie
-            try:
-                import cloakbrowser
-                cdp_cookies = await page._page.context.cookies()
-                logger.info("CloakBrowser 获取到 %d 个 Cookie", len(cdp_cookies))
-                return cdp_cookies
-            except Exception:
-                pass
-            return []
+            # 额外等待确保所有异步 Cookie 生成
+            await asyncio.sleep(3)
+
+            # 提取所有 Cookie
+            cookies = await context.cookies()
+            logger.info("CloakBrowser WAF 绕过完成，获取到 %d 个 Cookie", len(cookies))
+            return cookies
         finally:
-            await engine.close()
+            await browser.close()
 
     # ── Cookie 管理 ───────────────────────────────────────────────────
 
