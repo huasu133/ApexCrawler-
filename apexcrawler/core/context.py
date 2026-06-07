@@ -13,8 +13,8 @@ from dataclasses import dataclass, field
 
 @dataclass
 class PipelineContext:
-    """State carrier through all 6 pipeline stages (Schedule → Route → Evade →
-    Extract → Validate → Store). Each stage reads from and writes to this context."""
+    """State carrier through all 7 pipeline stages (Schedule → Route → Evade →
+    Extract → FontDecode → Validate → Store). Each stage reads from and writes to this context."""
 
     # ── Metadata ──
     trace_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
@@ -30,18 +30,12 @@ class PipelineContext:
     route_reason: str = ""
     target_difficulty: int = 0
 
-    # ── Evade stage outputs ──
+    # ── Evade stage outputs & device fingerprint (matching DeviceProfile) ──
     proxy: str = ""
     user_agent: str = ""
     ja4_fingerprint: str = ""
     tls_profile: str = ""
     browser_profile: dict = field(default_factory=dict)
-    webgl_renderer: str = ""
-    canvas_hash: str = ""
-    audio_fingerprint: str = ""
-    fonts: list[str] = field(default_factory=list)
-
-    # ── Device fingerprint fields (matching DeviceProfile) ──
     webgl_renderer: str = ""
     canvas_hash: str = ""
     audio_fingerprint: str = ""

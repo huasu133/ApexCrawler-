@@ -126,8 +126,10 @@ class _PageAdapter:
         self._pw_page = pw_page
         self._owns_ctx = owns_browser_context
 
-    async def content(self) -> str:
-        return await self._pw_page.content() if hasattr(self._pw_page, "content") else ""
+    @property
+    def content(self):
+        """Returns a coroutine for page HTML (property-style: await page.content)."""
+        return self._pw_page.content() if hasattr(self._pw_page, "content") else ""
 
     @property
     def url(self) -> str:

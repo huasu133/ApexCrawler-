@@ -98,7 +98,10 @@ class PyDollEngine(BaseEngine):
         })
 
         try:
-            await ensure_subresource_load(self)
+            from ..engines.subresource import ensure_subresource_load
+            # PyDoll Tab doesn't support Playwright's route() API,
+            # so this is best-effort only
+            await ensure_subresource_load(self._tab)
         except Exception:
             pass
 

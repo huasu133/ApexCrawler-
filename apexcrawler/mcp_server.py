@@ -11,7 +11,6 @@ ApexCrawler MCP Server — 让 AI 工具直接调用爬取能力。
 from __future__ import annotations
 
 import json
-import json as json_mod
 import logging
 import os
 import hashlib
@@ -636,12 +635,14 @@ async def list_schemas() -> str:
 async def crawl_status() -> str:
     """获取爬虫状态统计。"""
     try:
-        # This is a placeholder - in production this would read from a metrics system
+        # Dynamically list engines from registry instead of hardcoding
+        from apexcrawler.routing.registry import EngineRegistry
+        engines = list(EngineRegistry.list_all().keys())
         return json.dumps(
             {
                 "status": "running",
                 "version": "0.1.0",
-                "engines_available": ["vanilla", "patched", "camoufox", "cloaked", "cloaked_v2", "qidian"],
+                "engines_available": engines,
                 "uptime": "N/A",
                 "cached_pages": 0,
             },
@@ -663,9 +664,9 @@ async def crawl_status() -> str:
 async def batch_crawl(urls: str, engine: Optional[str] = None, fast: bool = False) -> str:
     """批量爬取多个 URL。"""
     try:
-        import json as json_mod
+        import json
 
-        url_list = json_mod.loads(urls) if isinstance(urls, str) else urls
+        url_list = json.loads(urls) if isinstance(urls, str) else urls
 
         if not isinstance(url_list, list):
             return json_mod.dumps({"error": "urls must be a JSON array"}, ensure_ascii=False)
@@ -809,7 +810,8 @@ async def crawl_metrics() -> str:
 
         tm = TaskManager()
         metrics = await tm.get_metrics()
-        metrics["engines_available"] = ["vanilla", "patched", "camoufox", "cloaked", "cloaked_v2", "qidian", "pydoll"]
+        from apexcrawler.routing.registry import EngineRegistry
+        metrics["engines_available"] = list(EngineRegistry.list_all().keys())
         return json.dumps(metrics, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
