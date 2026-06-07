@@ -14,13 +14,16 @@ def supports_brotli() -> bool:
         return False
 
 
-def decompress_brotli(data: bytes) -> bytes:
+def decompress_brotli(data: bytes) -> bytes | None:
     """Decompress brotli-encoded response body."""
     try:
         import brotli
         return brotli.decompress(data)
     except ImportError:
         logger.warning("brotli not installed — returning None")
+        return None
+    except Exception as e:
+        logger.warning(f"brotli decompression failed: {e} — returning raw data")
         return None
 
 

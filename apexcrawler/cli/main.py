@@ -195,7 +195,7 @@ def crawl(
         from ..pipeline.degrade import DegradeManager
         from ..engines.pool import EnginePool
         # 导入引擎模块，触发 @EngineRegistry.register 装饰器自动注册
-        from ..engines import vanilla, cloaked, camouflaged, patched
+        from ..engines import vanilla, cloaked, camouflaged, patched, cloaked_v2
 
         schema = get_schema(schema_name)
 
@@ -684,7 +684,7 @@ def ask(ctx: click.Context, query: str, output: str | None, live: bool) -> None:
         from ..http.tls_router import TLSRouter
         from ..pipeline.degrade import DegradeManager
         from ..engines.pool import EnginePool
-        from ..engines import vanilla, cloaked, camouflaged, patched
+        from ..engines import vanilla, cloaked, camouflaged, patched, cloaked_v2
 
         timing = TimingScheduler()
         session_mgr = SessionManager()

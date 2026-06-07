@@ -74,6 +74,15 @@ class RouteStage:
         self._engine = engine
 
     async def execute(self, ctx: PipelineContext) -> PipelineContext:
+        # If an engine was already forced (e.g. via CLI --engine or MCP param),
+        # skip routing and preserve the user's explicit choice
+        if ctx.selected_engine:
+            logger.info(
+                f"[route] trace={ctx.trace_id} engine already forced: "
+                f"{ctx.selected_engine} (skipping routing)"
+            )
+            return ctx
+
         if self._engine is not None:
             result = await self._engine.recommend(ctx.target_url)
             ctx.selected_engine = result.get("entry_point", "http")

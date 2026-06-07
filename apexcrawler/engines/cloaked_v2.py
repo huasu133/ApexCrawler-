@@ -148,8 +148,13 @@ class _PageAdapter:
     def __init__(self, page):
         self._page = page
 
-    async def content(self) -> str:
-        return await self._page.content()
+    @property
+    def content(self):
+        """Returns a coroutine that resolves to page HTML.
+
+        Usage: html = await page.content  (property-style access)
+        """
+        return self._page.content()
 
     @property
     def url(self) -> str:
