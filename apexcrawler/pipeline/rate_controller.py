@@ -133,3 +133,97 @@ class RateController:
         self._last_request = 0.0
         self._recovery_counter = 0
         logger.info("Rate controller reset to level 0 (normal)")
+
+
+class DomainRateController:
+    """Per-domain adaptive rate limiter.
+
+    Tracks error rates per domain and adjusts request intervals dynamically.
+    More granular than RateController's global approach.
+    """
+
+    def __init__(self, base_interval: float = 0.2, max_interval: float = 10.0):
+        self._base_interval = base_interval
+        self._max_interval = max_interval
+        self._domains: dict[str, dict] = {}  # domain -> {interval, errors, total, last}
+        self._lock = asyncio.Lock()
+
+    async def get_delay(self, url: str) -> float:
+        """Get domain-specific delay before next request."""
+        from urllib.parse import urlparse
+        domain = urlparse(url).netloc
+        async with self._lock:
+            info = self._domains.get(domain, {
+                'interval': self._base_interval,
+                'errors': 0,
+                'total': 0,
+                'last': 0.0
+            })
+            elapsed = time.monotonic() - info['last']
+            if elapsed < info['interval']:
+                return info['interval'] - elapsed
+            return 0.0
+
+    async def record_result(self, url: str, status: int, html_len: int = 0):
+        """Record a response result and adjust domain interval."""
+        from urllib.parse import urlparse
+        domain = urlparse(url).netloc
+        async with self._lock:
+            info = self._domains.get(domain, {
+                'interval': self._base_interval,
+                'errors': 0,
+                'total': 0,
+                'last': 0.0
+            })
+            info['total'] += 1
+            info['last'] = time.monotonic()
+
+            # Error detection
+            is_error = False
+            if status in (429, 403, 503):
+                is_error = True
+                info['errors'] += 1
+            elif html_len < 200 and status == 200:
+                is_error = True
+                info['errors'] += 1
+            elif status >= 400:
+                info['errors'] += 1
+            else:
+                # Success: gradually reduce interval
+                info['errors'] = max(0, info['errors'] - 1)
+
+            # Adjust interval based on error rate
+            if info['total'] >= 5:
+                error_rate = info['errors'] / info['total']
+                if error_rate > 0.3:
+                    # Increase interval (exponential backoff)
+                    info['interval'] = min(
+                        info['interval'] * 1.5,
+                        self._max_interval
+                    )
+                elif error_rate < 0.05 and info['interval'] > self._base_interval:
+                    # Recovery: decrease interval
+                    info['interval'] = max(
+                        info['interval'] * 0.9,
+                        self._base_interval
+                    )
+
+            self._domains[domain] = info
+
+    async def get_stats(self) -> dict:
+        """Get rate limiting stats for all domains."""
+        async with self._lock:
+            return {
+                domain: {
+                    'interval': info['interval'],
+                    'error_rate': info['errors'] / max(info['total'], 1),
+                    'total_requests': info['total']
+                }
+                for domain, info in self._domains.items()
+            }
+
+    def reset_domain(self, url: str):
+        """Reset rate limiting for a specific domain."""
+        from urllib.parse import urlparse
+        domain = urlparse(url).netloc
+        self._domains.pop(domain, None)

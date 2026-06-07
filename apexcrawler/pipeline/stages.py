@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
+import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from ..core.context import PipelineContext
 from ..core.exceptions import ConfigurationError, ExtractionError
@@ -375,6 +378,22 @@ class ExtractStage:
             except Exception:
                 logger.debug("cross_validator skipped (non-critical)")
 
+            # Structured data extraction (priority: JSON-LD > OG > Microdata > CSS)
+            try:
+                structured = self._extract_structured_data(html)
+                if structured and len(structured) > 0:
+                    # If structured data has meaningful content, elevate confidence
+                    ctx.extracted_data = structured
+                    ctx.extraction_confidence = max(ctx.extraction_confidence or 0.5, 0.85)
+                    logger.info(
+                        f"[extract] structured data found: {len(structured)} fields "
+                        f"(json_ld={len([k for k in structured if not k.startswith(('og_','md_'))])}, "
+                        f"og={len([k for k in structured if k.startswith('og_')])}, "
+                        f"microdata={len([k for k in structured if k.startswith('md_')])})"
+                    )
+            except Exception as e:
+                logger.debug(f"[extract] structured data extraction skipped: {e}")
+
             return html
         except Exception as e:
             logger.warning(f"[extract] HTTP failed: {e}")
@@ -392,6 +411,63 @@ class ExtractStage:
         except Exception as e:
             logger.warning(f"[extract] Browser failed: {e}")
             return None
+
+    def _extract_structured_data(self, html: str) -> dict | None:
+        """Extract JSON-LD, Open Graph, and Microdata from HTML.
+
+        Structured data (JSON-LD, OG, Microdata) is more stable than
+        CSS selectors because it's embedded in the page metadata and
+        doesn't change with layout updates.
+        """
+        result = {}
+
+        # 1. JSON-LD (most reliable)
+        try:
+            import json, re
+            ld_json_matches = re.findall(
+                r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
+                html, re.DOTALL | re.IGNORECASE
+            )
+            for match in ld_json_matches:
+                try:
+                    data = json.loads(match.strip())
+                    # Flatten @graph if present
+                    if '@graph' in data:
+                        for item in data['@graph']:
+                            if isinstance(item, dict):
+                                result.update(item)
+                    else:
+                        result.update(data)
+                except json.JSONDecodeError:
+                    continue
+        except Exception:
+            pass
+
+        # 2. Open Graph meta tags
+        try:
+            import re
+            og_matches = re.findall(
+                r'<meta[^>]+property="(?:og|article|product):([^"]+)"[^>]+content="([^"]*)"',
+                html, re.IGNORECASE
+            )
+            for key, value in og_matches:
+                result[f"og_{key}"] = value
+        except Exception:
+            pass
+
+        # 3. Microdata (itemprop)
+        try:
+            import re
+            microdata_matches = re.findall(
+                r'<[^>]+itemprop="([^"]+)"[^>]+content="([^"]*)"',
+                html, re.IGNORECASE
+            )
+            for key, value in microdata_matches:
+                result[f"md_{key}"] = value
+        except Exception:
+            pass
+
+        return result if result else None
 
     async def rollback(self, ctx: PipelineContext) -> None:
         ctx.raw_html = ""
@@ -456,14 +532,90 @@ class StoreStage:
 
     For now, logs the result and writes a stored_id to the context.
     In production this would write to a database, object store, or queue.
+
+    Supports incremental crawling via ETag/Last-Modified tracking,
+    avoiding redundant downloads of unchanged pages.
     """
 
     name = "store"
 
+    def __init__(self, cache_dir: str | None = None):
+        self._cache_dir = cache_dir or os.path.expanduser("~/.apexcrawler/page_cache")
+        os.makedirs(self._cache_dir, exist_ok=True)
+
+    def _get_cache_path(self, url: str) -> Path:
+        """Get filesystem path for URL cache."""
+        url_hash = hashlib.sha256(url.encode()).hexdigest()[:16]
+        return Path(self._cache_dir) / f"{url_hash}.json"
+
+    def _check_cached(self, url: str, headers: dict) -> str | None:
+        """Check if page is unchanged via ETag/Last-Modified.
+
+        Returns the cached HTML if the page hasn't changed, None otherwise.
+        """
+        cache_path = self._get_cache_path(url)
+        if not cache_path.exists():
+            return None
+
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            etag = headers.get("ETag", headers.get("etag", ""))
+            last_modified = headers.get("Last-Modified", headers.get("last-modified", ""))
+
+            # If ETag matches, page hasn't changed
+            if etag and cached.get("etag") == etag:
+                logger.debug(f"[store] ETag match for {url}, using cache")
+                return cached.get("html", "")
+
+            # If Last-Modified matches, page hasn't changed
+            if last_modified and cached.get("last_modified") == last_modified:
+                logger.debug(f"[store] Last-Modified match for {url}, using cache")
+                return cached.get("html", "")
+        except (json.JSONDecodeError, OSError):
+            pass
+
+        return None
+
+    def _save_to_cache(self, url: str, html: str, headers: dict):
+        """Save page to cache with ETag/Last-Modified metadata."""
+        cache_path = self._get_cache_path(url)
+        content_hash = hashlib.md5(html.encode()).hexdigest()
+
+        cache_data = {
+            "url": url,
+            "html": html,
+            "content_hash": content_hash,
+            "etag": headers.get("ETag", headers.get("etag", "")),
+            "last_modified": headers.get("Last-Modified", headers.get("last-modified", "")),
+            "cached_at": __import__('time').time(),
+        }
+
+        try:
+            cache_path.write_text(json.dumps(cache_data, ensure_ascii=False), encoding="utf-8")
+            logger.debug(f"[store] cached {url} ({len(html)} bytes)")
+        except OSError as e:
+            logger.warning(f"[store] failed to cache {url}: {e}")
+
     async def execute(self, ctx: PipelineContext) -> PipelineContext:
-        # Generate a deterministic stored_id from trace + url
+        """Enhanced execute with incremental crawling support."""
+        # Generate stored_id
         key = f"{ctx.trace_id}:{ctx.target_url}"
         ctx.stored_id = hashlib.sha256(key.encode()).hexdigest()[:16]
+
+        # Check for cache hit (incremental crawling)
+        if ctx.raw_html and hasattr(ctx, '_last_headers'):
+            cached_html = self._check_cached(ctx.target_url, ctx._last_headers)
+            if cached_html:
+                ctx.raw_html = cached_html
+                ctx.incremental_hit = True
+                logger.info(
+                    f"[store] incremental cache hit for {ctx.target_url} "
+                    f"(stored_id={ctx.stored_id})"
+                )
+            else:
+                # Save to cache for future incremental checks
+                self._save_to_cache(ctx.target_url, ctx.raw_html, ctx._last_headers)
+                ctx.incremental_hit = False
 
         logger.info(
             f"[store] trace={ctx.trace_id} stored_id={ctx.stored_id} "

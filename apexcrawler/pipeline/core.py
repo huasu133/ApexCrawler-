@@ -10,6 +10,7 @@ from ..core.exceptions import NonRetryableError, RetryableError
 from ..core.context import PipelineContext
 from .checkpoint import CheckpointManager, _context_to_dict
 from .hooks import PipelineHooks
+from .rate_controller import DomainRateController
 
 logger = logging.getLogger(__name__)
 @dataclass
@@ -32,13 +33,16 @@ class PipelineExecutor:
     def __init__(self, stages: list, configs: dict[str, StageConfig] | None = None,
                  settings=None, session_manager=None, rate_controller=None, degrade_manager=None,
                  plugin_manager=None, checkpoint_dir: str | None = None,
-                 hooks: PipelineHooks | None = None):
+                 hooks: PipelineHooks | None = None,
+                 domain_rate_controller: DomainRateController | None = None):
         self._stages = stages
         self._configs = configs or {}
         self._session_mgr = session_manager
         self._rate_ctrl = rate_controller
         self._degrade_mgr = degrade_manager
         self._plugin_mgr = plugin_manager
+        # Domain-level rate controller alongside the global rate controller
+        self._domain_rate_ctrl = domain_rate_controller or DomainRateController()
         # Checkpoint manager
         self._checkpoint_mgr = CheckpointManager(
             storage_dir=checkpoint_dir or ".apex_checkpoints"
@@ -90,6 +94,16 @@ class PipelineExecutor:
                         f"[degrade] engine degraded {old_engine} → {ctx.selected_engine}"
                     )
 
+            # DomainRateController: domain-level rate limiting before extract
+            if self._domain_rate_ctrl and stage.name == "extract":
+                delay = await self._domain_rate_ctrl.get_delay(ctx.target_url)
+                if delay > 0:
+                    logger.debug(
+                        f"[domain_rate] waiting {delay:.2f}s for "
+                        f"{__import__('urllib.parse').urlparse(ctx.target_url).netloc}"
+                    )
+                    await asyncio.sleep(delay)
+
             # Hook: on_stage_start — before each stage executes
             await self._safe_execute_hook("on_stage_start", ctx, stage.name)
             # Hook: on_before_goto — before navigation (contextual, fires if stage is navigation-related)
@@ -122,6 +136,12 @@ class PipelineExecutor:
                     if hasattr(ctx, 'raw_html') and ctx.raw_html and len(ctx.raw_html) > 0:
                         self._rate_ctrl.signal_success()
 
+                # DomainRateController: record domain-level result
+                if self._domain_rate_ctrl and stage.name == "extract":
+                    status = getattr(ctx, '_last_status', 200)
+                    html_len = len(ctx.raw_html or '')
+                    await self._domain_rate_ctrl.record_result(ctx.target_url, status, html_len)
+
                 # Hook: on_stage_end — stage completed successfully
                 await self._safe_execute_hook("on_stage_end", ctx, stage.name, True)
                 # Hook: on_after_goto — after page load (contextual)
@@ -153,6 +173,8 @@ class PipelineExecutor:
                 ctx.stage_errors.setdefault(stage.name, []).append(str(e))
                 if self._rate_ctrl and stage.name == "extract":
                     self._rate_ctrl.signal(status=429)
+                if self._domain_rate_ctrl and stage.name == "extract":
+                    await self._domain_rate_ctrl.record_result(ctx.target_url, 429, 0)
                 await self._rollback(executed, ctx)
                 # Hook: on_before_return — before returning results on error
                 await self._safe_execute_hook("on_before_return", ctx)
@@ -235,6 +257,7 @@ class PipelineExecutor:
             degrade_manager=self._degrade_mgr,
             plugin_manager=self._plugin_mgr,
             hooks=self._hooks,
+            domain_rate_controller=self._domain_rate_ctrl,
         )
         return await rescue_executor.run(restored_ctx)
 

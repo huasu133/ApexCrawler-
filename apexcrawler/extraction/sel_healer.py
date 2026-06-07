@@ -9,16 +9,118 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
+import sqlite3
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Optional
+from urllib.parse import urlparse
 
 from lxml import html as lhtml
 from lxml.etree import _Element
 from lxml.html import HtmlElement
 
 logger = logging.getLogger(__name__)
+
+
+# ─── SQLite-backed Selector Confidence Database ────────────────────────────────
+
+
+class SelectorDatabase:
+    """SQLite-backed selector confidence store.
+
+    Persists selector success/failure history and confidence scores
+    so they survive across crawler restarts.
+    """
+
+    def __init__(self, db_path: str | None = None):
+        if db_path is None:
+            db_dir = os.path.expanduser("~/.apexcrawler")
+            os.makedirs(db_dir, exist_ok=True)
+            db_path = os.path.join(db_dir, "selector_cache.db")
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._init_db()
+
+    def _init_db(self):
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS selectors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url_pattern TEXT NOT NULL,
+                field_name TEXT NOT NULL,
+                selector TEXT NOT NULL,
+                selector_type TEXT DEFAULT 'css',
+                confidence REAL DEFAULT 0.5,
+                success_count INTEGER DEFAULT 0,
+                fail_count INTEGER DEFAULT 0,
+                last_used_at REAL DEFAULT 0,
+                created_at REAL DEFAULT 0,
+                UNIQUE(url_pattern, field_name, selector)
+            )
+        """)
+        self._conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_url_field
+            ON selectors(url_pattern, field_name)
+        """)
+        self._conn.commit()
+
+    def get_candidates(self, url: str, field: str) -> list[tuple[str, float]]:
+        """Get selectors sorted by confidence descending."""
+        pattern = urlparse(url).netloc
+        rows = self._conn.execute(
+            "SELECT selector, confidence FROM selectors "
+            "WHERE url_pattern = ? AND field_name = ? "
+            "ORDER BY confidence DESC",
+            (pattern, field),
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def record_success(self, url: str, field: str, selector: str):
+        """Increase confidence on success."""
+        pattern = urlparse(url).netloc
+        ts = __import__("time").time()
+        self._conn.execute(
+            """
+            INSERT INTO selectors (url_pattern, field_name, selector, confidence, success_count, last_used_at, created_at)
+            VALUES (?, ?, ?, 0.5, 1, ?, ?)
+            ON CONFLICT(url_pattern, field_name, selector) DO UPDATE SET
+                confidence = MIN(1.0, confidence * 1.05 + 0.02),
+                success_count = success_count + 1,
+                last_used_at = ?
+        """,
+            (pattern, field, selector, ts, ts, ts),
+        )
+        self._conn.commit()
+
+    def record_failure(self, url: str, field: str, selector: str):
+        """Decrease confidence on failure."""
+        pattern = urlparse(url).netloc
+        self._conn.execute(
+            """
+            UPDATE selectors SET
+                confidence = MAX(0.0, confidence * 0.85 - 0.05),
+                fail_count = fail_count + 1,
+                last_used_at = ?
+            WHERE url_pattern = ? AND field_name = ? AND selector = ?
+        """,
+            (__import__("time").time(), pattern, field, selector),
+        )
+        self._conn.commit()
+
+    def decay_old_selectors(self, days: int = 7):
+        """Decay confidence for selectors unused for N days."""
+        cutoff = __import__("time").time() - days * 86400
+        self._conn.execute(
+            """
+            UPDATE selectors SET confidence = confidence * 0.99
+            WHERE last_used_at < ? AND last_used_at > 0
+        """,
+            (cutoff,),
+        )
+        self._conn.commit()
+
+    def close(self):
+        self._conn.close()
 
 
 # ─── Adaptive Element Fingerprint ─────────────────────────────────────────────
@@ -61,32 +163,143 @@ class SelHealer:
 
     # ── Legacy healing ────────────────────────────────────────────────────
 
-    async def heal(self, url: str, ctx) -> str | None:
-        """Attempt to recover content when normal extraction fails.
+    async def heal(self, url: str, ctx, field_name: str = "", expected_text: str = "") -> str | None:
+        """Enhanced recover with 4-level healing strategy.
 
-        Uses the ctx's existing headers, proxy, and user-agent
-        from the pipeline to maintain anti-detection state.
+        Tries: text pattern → attribute fuzzy → structural context → XPath fallback
+        Falls back to full page re-fetch if all strategies fail.
         """
+        # First try to fetch the page
+        html = await self._fetch_page(url, ctx)
+        if not html:
+            return None
+
+        # Try 4 healing strategies in order
+        strategies = [
+            ("text_pattern", lambda: self._heal_text_pattern(html, field_name, expected_text)),
+            ("attribute_fuzzy", lambda: self._heal_attribute_fuzzy(html, ctx.raw_selector if hasattr(ctx, "raw_selector") else "")),
+            ("structural_context", lambda: self._heal_structural_context(html, ctx.raw_selector if hasattr(ctx, "raw_selector") else "")),
+            ("xpath_fallback", lambda: self._heal_xpath_fallback(html, ctx.raw_selector if hasattr(ctx, "raw_selector") else "")),
+        ]
+
+        for name, strategy in strategies:
+            try:
+                result = strategy()
+                if result:
+                    logger.info(f"[sel_healer] Level '{name}' recovered selector: {result}")
+                    return result
+            except Exception as e:
+                logger.debug(f"[sel_healer] Level '{name}' failed: {e}")
+
+        # Ultimate fallback: re-fetch with full browser
         try:
             import httpx
+
             headers = {}
-            if hasattr(ctx, 'user_agent') and ctx.user_agent:
-                headers['User-Agent'] = ctx.user_agent
-            headers['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-            headers['Accept-Language'] = 'en-US,en;q=0.9'
-
-            proxy = getattr(ctx, 'proxy', None)
-
-            async with httpx.AsyncClient(
-                timeout=10, follow_redirects=True,
-                proxy=proxy, headers=headers,
-            ) as c:
+            if hasattr(ctx, "user_agent") and ctx.user_agent:
+                headers["User-Agent"] = ctx.user_agent
+            proxy = getattr(ctx, "proxy", None)
+            async with httpx.AsyncClient(timeout=15, follow_redirects=True, proxy=proxy, headers=headers) as c:
                 r = await c.get(url)
                 r.raise_for_status()
                 return r.text
         except Exception as e:
-            logger.debug(f"sel_healer recovery failed: {e}")
+            logger.warning(f"[sel_healer] All healing strategies failed: {e}")
             return None
+
+    async def _fetch_page(self, url: str, ctx) -> str | None:
+        """Fetch page HTML using context settings."""
+        try:
+            import httpx
+
+            headers = {"Accept": "text/html,*/*;q=0.8"}
+            if hasattr(ctx, "user_agent") and ctx.user_agent:
+                headers["User-Agent"] = ctx.user_agent
+            proxy = getattr(ctx, "proxy", None)
+            async with httpx.AsyncClient(timeout=10, follow_redirects=True, proxy=proxy, headers=headers) as c:
+                r = await c.get(url)
+                r.raise_for_status()
+                return r.text
+        except Exception as e:
+            logger.debug(f"[sel_healer] Page fetch failed: {e}")
+            return None
+
+    # ── 4-Level Healing Strategies ────────────────────────────────────────
+
+    def _heal_text_pattern(self, html: str, field_name: str, expected_text: str) -> str | None:
+        """Level 1: Find element by text content pattern matching."""
+        if not expected_text:
+            return None
+        tree = lhtml.fromstring(html)
+        for elem in tree.iter():
+            if not isinstance(elem, lhtml.HtmlComment):
+                text = (elem.text_content() or "").strip()
+                if expected_text.lower() in text.lower():
+                    return self._build_selector_from_element(elem)
+        return None
+
+    def _heal_attribute_fuzzy(self, html: str, original_selector: str) -> str | None:
+        """Level 2: Fuzzy match CSS classes using Levenshtein distance."""
+        tree = lhtml.fromstring(html)
+
+        # Extract class names from original selector
+        classes = re.findall(r"\.([\w-]+)", original_selector)
+        if not classes:
+            return None
+
+        best_match = None
+        best_score = 0.0
+
+        for elem in tree.iter():
+            if isinstance(elem, lhtml.HtmlComment):
+                continue
+            elem_classes = (elem.get("class", "") or "").split()
+            for orig_cls in classes:
+                for elem_cls in elem_classes:
+                    sim = SequenceMatcher(None, orig_cls, elem_cls).ratio()
+                    if sim > best_score and sim > 0.6:
+                        best_score = sim
+                        best_match = elem
+
+        if best_match:
+            return self._build_selector_from_element(best_match)
+        return None
+
+    def _heal_structural_context(self, html: str, original_selector: str) -> str | None:
+        """Level 3: Navigate via parent/sibling structural context."""
+        tree = lhtml.fromstring(html)
+        # Try parent-child relationships
+        tag_match = re.search(r"^(\w+)", original_selector)
+        if not tag_match:
+            return None
+        tag = tag_match.group(1)
+
+        # Find elements with same tag, same depth
+        for elem in tree.iter(tag):
+            if not isinstance(elem, lhtml.HtmlComment):
+                return self._build_selector_from_element(elem)
+        return None
+
+    def _heal_xpath_fallback(self, html: str, original_selector: str) -> str | None:
+        """Level 4: Convert CSS selector to XPath as last resort."""
+        # Simple CSS to XPath conversion for common patterns
+        xpath = original_selector
+        # ID selector: #foo -> //*[@id='foo']
+        xpath = re.sub(r"#([\w-]+)", r"[@id='\1']", xpath)
+        # Class selector: .foo -> [contains(@class,'foo')]
+        xpath = re.sub(r"\.([\w-]+)", r"[contains(@class,'\1')]", xpath)
+        # Prepend // if no leading /
+        if not xpath.startswith("/"):
+            xpath = "//" + xpath
+
+        try:
+            tree = lhtml.fromstring(html)
+            results = tree.xpath(xpath)
+            if results:
+                return xpath
+        except Exception:
+            pass
+        return None
 
     # ── Adaptive element tracking (new) ───────────────────────────────────
 
@@ -328,6 +541,82 @@ class SelHealer:
         )
         return (selector, 0.0)
 
+    def track_with_persistence(
+        self,
+        page,
+        url: str,
+        selector: str,
+        field: str = "",
+        fingerprint: ElementFingerprint | None = None,
+        db: SelectorDatabase | None = None,
+    ) -> tuple[str, float]:
+        """Track element with SQLite-backed confidence persistence.
+
+        Args:
+            page: Playwright Page object
+            url: Target URL
+            selector: Original CSS/XPath selector
+            field: Field name for database tracking
+            fingerprint: Optional ElementFingerprint
+            db: Optional SelectorDatabase instance
+
+        Returns:
+            (selector, confidence) tuple
+        """
+        # Phase 1: Try original selector
+        html = page.content()
+        try:
+            tree = lhtml.fromstring(html)
+            if selector.startswith("//"):
+                results = tree.xpath(selector)
+            else:
+                results = tree.cssselect(selector)
+
+            if results:
+                confidence = 1.0
+                if db:
+                    db.record_success(url, field or "generic", selector)
+                return (selector, confidence)
+        except Exception:
+            pass
+
+        # Phase 2: Try database candidates
+        if db and field:
+            candidates = db.get_candidates(url, field)
+            for cand_sel, cand_conf in candidates:
+                try:
+                    tree = lhtml.fromstring(html)
+                    if cand_sel.startswith("//"):
+                        results = tree.xpath(cand_sel)
+                    else:
+                        results = tree.cssselect(cand_sel)
+                    if results:
+                        db.record_success(url, field, cand_sel)
+                        return (cand_sel, cand_conf)
+                except Exception:
+                    db.record_failure(url, field, cand_sel)
+
+        # Phase 3: Adaptive re-location via fingerprint
+        if fingerprint is not None:
+            candidates = self._candidates_from_html(html)
+            scored = []
+            for elem, cand_fp in candidates:
+                sim = self.calculate_similarity(fingerprint, cand_fp)
+                scored.append((sim, elem, cand_fp))
+            scored.sort(key=lambda x: x[0], reverse=True)
+
+            if scored and scored[0][0] >= 0.6:
+                best_score, best_elem, best_fp = scored[0]
+                new_selector = self._build_selector_from_element(best_elem, best_fp)
+                if db:
+                    db.record_success(url, field or "generic", new_selector)
+                return (new_selector, best_score)
+
+        # Phase 4: Record failure
+        if db:
+            db.record_failure(url, field or "generic", selector)
+        return (selector, 0.0)
+
 
 # ─── SemanticRelocator (kept for backward compatibility) ──────────────────────
 
@@ -342,15 +631,15 @@ class SemanticRelocator:
         """Generate 5 backup selectors from original."""
         selectors = [original_selector]
         # ID-based fallback
-        id_match = re.search(r'#(\w+)', original_selector)
+        id_match = re.search(r"#(\w+)", original_selector)
         if id_match:
             selectors.append(f"//*[@id='{id_match.group(1)}']")
         # Class-based fallback
-        class_match = re.search(r'\.([\w-]+)', original_selector)
+        class_match = re.search(r"\.([\w-]+)", original_selector)
         if class_match:
             selectors.append(f"//*[contains(@class,'{class_match.group(1)}')]")
         # Tag + text fallback
-        tag_match = re.search(r'^(\w+)', original_selector)
+        tag_match = re.search(r"^(\w+)", original_selector)
         if tag_match:
             selectors.append(f"//{tag_match.group(1)}")
         return list(set(selectors))

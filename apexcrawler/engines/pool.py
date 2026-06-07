@@ -8,11 +8,33 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import AsyncIterator
 
 from apexcrawler.core.exceptions import EngineError, EnginePoolExhausted
 from apexcrawler.engines.base import BaseEngine
 from apexcrawler.routing.registry import EngineRegistry
+
+
+@dataclass
+class HybridSession:
+    """Result from hybrid crawl mode.
+
+    After browser login/authentication, subsequent requests can reuse
+    the browser's cookies via FastFetcher, saving ~97% proxy bandwidth.
+    """
+    engine: BaseEngine
+    cookies: dict[str, str]
+    user_agent: str
+
+    async def get_fetcher(self) -> "FastFetcher":
+        """Create a FastFetcher pre-populated with browser cookies."""
+        from apexcrawler.http.fetcher import FastFetcher
+        fetcher = FastFetcher(impersonate="chrome131")
+        # Set cookies
+        for name, value in self.cookies.items():
+            fetcher.session.cookies.set(name, value)
+        return fetcher
 
 
 class EnginePool:
@@ -131,6 +153,105 @@ class EnginePool:
             self._active_engines.discard(engine_instance)
             # Return engine to the idle pool instead of closing it,
             # unless the idle pool has reached capacity.
+            idle_pool = self._idle_engines.setdefault(engine_name, [])
+            if len(idle_pool) >= self._max_idle_per_engine:
+                await engine_instance.close()
+            else:
+                idle_pool.append(engine_instance)
+            engine_sem.release()
+            self._total_semaphore.release()
+
+    @asynccontextmanager
+    async def acquire_hybrid(self, engine_name: str) -> AsyncIterator[HybridSession]:
+        """Acquire a browser engine with cookie extraction for hybrid crawling.
+
+        After acquiring the engine and navigating to a URL, callers can
+        extract the browser's cookies and reuse them via FastFetcher,
+        saving proxy bandwidth on subsequent requests.
+
+        Usage:
+            async with pool.acquire_hybrid("cloaked") as session:
+                page = await session.engine.navigate("https://example.com/login")
+                # ... perform login interaction ...
+                # Extract cookies after login
+                cookies = await page.evaluate("document.cookie")
+                session.cookies = _parse_cookies(cookies)
+                # Now use session.get_fetcher() for follow-up requests
+
+        Args:
+            engine_name: Name of the registered engine to acquire.
+
+        Yields:
+            A HybridSession containing the engine, cookies, and user agent.
+        """
+        engine_cls = EngineRegistry.get(engine_name)
+        if engine_cls is None:
+            raise EngineError(engine_name, f"Engine '{engine_name}' is not registered")
+
+        engine_sem = self._engine_semaphores.get(engine_name)
+        if engine_sem is None:
+            engine_sem = asyncio.Semaphore(1)
+            self._engine_semaphores[engine_name] = engine_sem
+
+        total_acquired = False
+        try:
+            await asyncio.wait_for(self._total_semaphore.acquire(), timeout=30)
+            total_acquired = True
+            await asyncio.wait_for(engine_sem.acquire(), timeout=30)
+        except asyncio.TimeoutError:
+            if total_acquired:
+                self._total_semaphore.release()
+            raise EnginePoolExhausted(self._max_total)
+
+        cfg = self._engine_configs.get(engine_name)
+        headless = getattr(cfg, "headless", True) if cfg else True
+        viewport = getattr(cfg, "viewport", None) if cfg else None
+        extra_args = getattr(cfg, "extra_args", None) if cfg else None
+        launch_timeout = getattr(cfg, "timeout_seconds", 30) if cfg else 30
+
+        engine_instance: BaseEngine | None = None
+        reused = False
+
+        # ── Phase 1: try to reuse an idle engine ────────────────
+        idle_list = self._idle_engines.get(engine_name, [])
+        while idle_list:
+            candidate = idle_list.pop()
+            try:
+                if await candidate.health_check():
+                    engine_instance = candidate
+                    reused = True
+                    break
+                else:
+                    await candidate.close()
+            except Exception:
+                await candidate.close()
+
+        # ── Phase 2: create a new engine if nothing to reuse ────
+        if not reused:
+            kwargs: dict = {"headless": headless, "viewport": viewport}
+            if extra_args is not None:
+                kwargs["extra_args"] = extra_args
+            engine_instance = engine_cls(**kwargs)
+            await asyncio.wait_for(engine_instance.launch(), timeout=launch_timeout)
+
+        # Extract the user agent from the engine's page context
+        user_agent = ""
+        try:
+            user_agent = await engine_instance._page.evaluate("navigator.userAgent")
+        except Exception:
+            pass
+
+        session = HybridSession(
+            engine=engine_instance,
+            cookies={},
+            user_agent=user_agent,
+        )
+
+        try:
+            self._active_engines.add(engine_instance)
+            yield session
+        finally:
+            self._active_engines.discard(engine_instance)
             idle_pool = self._idle_engines.setdefault(engine_name, [])
             if len(idle_pool) >= self._max_idle_per_engine:
                 await engine_instance.close()

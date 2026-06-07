@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import hashlib
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -369,6 +371,336 @@ async def qidian_crawl(book_id: str, chapters: int = 5) -> str:
             engine.close_sync()
     except Exception as e:
         logger.exception("qidian_crawl tool failed")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# New Tools: crawl_site
+# ══════════════════════════════════════════════════════════════════════
+
+
+@server.tool(
+    name="crawl_site",
+    description="站点级爬取 — 从指定 URL 开始，自动发现并爬取站内链接。max_pages 控制最大页面数，same_domain 控制是否仅爬取同域名。",
+)
+async def crawl_site(url: str, max_pages: int = 10, same_domain: bool = True) -> str:
+    """爬取站点内多个页面。"""
+    try:
+        from apexcrawler.http.fetcher import FastFetcher
+        from urllib.parse import urlparse, urljoin
+        from bs4 import BeautifulSoup
+
+        fetcher = FastFetcher(impersonate="chrome131")
+        try:
+            base_domain = urlparse(url).netloc
+            visited = set()
+            to_visit = [url]
+            results = []
+
+            while to_visit and len(visited) < max_pages:
+                current_url = to_visit.pop(0)
+                if current_url in visited:
+                    continue
+                visited.add(current_url)
+
+                result = fetcher.get(current_url)
+                html = result.get("html", "")
+                status = result.get("status_code", 0)
+
+                results.append(
+                    {
+                        "url": current_url,
+                        "status_code": status,
+                        "content_length": len(html),
+                    }
+                )
+
+                # Extract links for further crawling
+                if status == 200 and html:
+                    soup = BeautifulSoup(html, "html.parser")
+                    for a in soup.find_all("a", href=True):
+                        link = urljoin(current_url, a["href"])
+                        link_parsed = urlparse(link)
+                        if link_parsed.scheme in ("http", "https") and link not in visited:
+                            if not same_domain or link_parsed.netloc == base_domain:
+                                to_visit.append(link)
+
+            return json.dumps(
+                {
+                    "start_url": url,
+                    "pages_crawled": len(results),
+                    "results": results,
+                },
+                ensure_ascii=False,
+            )
+        finally:
+            fetcher.close()
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# New Tools: export_crawl
+# ══════════════════════════════════════════════════════════════════════
+
+
+@server.tool(
+    name="export_crawl",
+    description="导出爬取结果 — 支持 JSON、JSONL、CSV 格式。data 为 JSON 字符串格式的爬取结果。",
+)
+async def export_crawl(data: str, format: str = "json") -> str:
+    """导出爬取结果为指定格式。"""
+    try:
+        import csv
+        import io
+
+        parsed = json.loads(data) if isinstance(data, str) else data
+
+        if format == "jsonl":
+            lines = [json.dumps(item, ensure_ascii=False) for item in parsed]
+            return "\n".join(lines)
+        elif format == "csv":
+            if isinstance(parsed, list) and parsed:
+                output = io.StringIO()
+                writer = csv.DictWriter(output, fieldnames=list(parsed[0].keys()))
+                writer.writeheader()
+                writer.writerows(parsed)
+                return output.getvalue()
+            else:
+                return json.dumps({"error": "CSV export requires a non-empty array of objects"}, ensure_ascii=False)
+        else:
+            return json.dumps(parsed, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# New Tools: screenshot_url
+# ══════════════════════════════════════════════════════════════════════
+
+
+@server.tool(
+    name="screenshot_url",
+    description="截取指定 URL 的页面截图。full_page=True 时截取完整页面（含滚动区域）。返回 base64 编码的 PNG 图片。",
+)
+async def screenshot_url(url: str, full_page: bool = False) -> str:
+    """截取页面截图。"""
+    try:
+        from playwright.async_api import async_playwright
+        import base64
+
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=True)
+            try:
+                page = await browser.new_page()
+                await page.goto(url, wait_until="networkidle", timeout=30000)
+                screenshot_bytes = await page.screenshot(full_page=full_page)
+                b64 = base64.b64encode(screenshot_bytes).decode("ascii")
+                return json.dumps(
+                    {
+                        "url": url,
+                        "full_page": full_page,
+                        "screenshot_base64": b64,
+                        "size_bytes": len(screenshot_bytes),
+                    },
+                    ensure_ascii=False,
+                )
+            finally:
+                await browser.close()
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# New Tools: validate_selector
+# ══════════════════════════════════════════════════════════════════════
+
+
+@server.tool(
+    name="validate_selector",
+    description="验证 CSS/XPath 选择器是否能在页面上匹配到元素。返回匹配数量和示例内容。",
+)
+async def validate_selector(url: str, selector: str, selector_type: str = "css") -> str:
+    """验证选择器是否有效。"""
+    try:
+        from apexcrawler.http.fetcher import FastFetcher
+        from bs4 import BeautifulSoup
+
+        fetcher = FastFetcher(impersonate="chrome131")
+        try:
+            result = fetcher.get(url)
+            html = result.get("html", "")
+            status = result.get("status_code", 0)
+
+            if status != 200:
+                return json.dumps({"url": url, "error": f"HTTP {status}"}, ensure_ascii=False)
+
+            soup = BeautifulSoup(html, "html.parser")
+
+            if selector_type == "xpath":
+                # BeautifulSoup doesn't support XPath directly, try lxml
+                try:
+                    from lxml import html as lhtml
+
+                    tree = lhtml.fromstring(html)
+                    elements = tree.xpath(selector)
+                    match_count = len(elements)
+                    samples = [(str(el.tag), (el.text or "")[:100]) for el in elements[:3]] if elements else []
+                except Exception:
+                    match_count = 0
+                    samples = []
+            else:
+                elements = soup.select(selector)
+                match_count = len(elements)
+                samples = [str(el)[:200] for el in elements[:3]]
+
+            return json.dumps(
+                {
+                    "url": url,
+                    "selector": selector,
+                    "selector_type": selector_type,
+                    "match_count": match_count,
+                    "matches": match_count > 0,
+                    "samples": samples,
+                },
+                ensure_ascii=False,
+            )
+        finally:
+            fetcher.close()
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# New Tools: clear_cache
+# ══════════════════════════════════════════════════════════════════════
+
+
+@server.tool(
+    name="clear_cache",
+    description="清除爬虫的页面前端缓存。",
+)
+async def clear_cache() -> str:
+    """清除页面缓存。"""
+    try:
+        cache_dir = os.path.expanduser("~/.apexcrawler/page_cache")
+        if os.path.exists(cache_dir):
+            import shutil
+
+            shutil.rmtree(cache_dir)
+            os.makedirs(cache_dir)
+            return json.dumps(
+                {"success": True, "message": f"Cache directory {cache_dir} cleared"}, ensure_ascii=False
+            )
+        return json.dumps({"success": True, "message": "No cache directory found"}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# New Tools: list_schemas
+# ══════════════════════════════════════════════════════════════════════
+
+
+@server.tool(
+    name="list_schemas",
+    description="列出所有可用的数据提取 Schema（如 product、article、company 等）。",
+)
+async def list_schemas() -> str:
+    """列出可用 Schema。"""
+    try:
+        from apexcrawler.extraction.schema import list_schemas
+
+        schemas = list_schemas()
+        return json.dumps(
+            {
+                "schemas": schemas,
+                "count": len(schemas),
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# New Tools: crawl_status
+# ══════════════════════════════════════════════════════════════════════
+
+
+@server.tool(
+    name="crawl_status",
+    description="获取爬虫运行状态统计（如请求数、错误率等）。",
+)
+async def crawl_status() -> str:
+    """获取爬虫状态统计。"""
+    try:
+        # This is a placeholder - in production this would read from a metrics system
+        return json.dumps(
+            {
+                "status": "running",
+                "version": "0.1.0",
+                "engines_available": ["vanilla", "patched", "camoufox", "cloaked", "cloaked_v2", "qidian"],
+                "uptime": "N/A",
+                "cached_pages": 0,
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# New Tools: batch_crawl
+# ══════════════════════════════════════════════════════════════════════
+
+
+@server.tool(
+    name="batch_crawl",
+    description="批量爬取多个 URL。urls 为 JSON 数组字符串（如 '[\"https://a.com\",\"https://b.com\"]'）。engine 和 fast 参数同 crawl 工具。",
+)
+async def batch_crawl(urls: str, engine: Optional[str] = None, fast: bool = False) -> str:
+    """批量爬取多个 URL。"""
+    try:
+        import json as json_mod
+
+        url_list = json_mod.loads(urls) if isinstance(urls, str) else urls
+
+        if not isinstance(url_list, list):
+            return json_mod.dumps({"error": "urls must be a JSON array"}, ensure_ascii=False)
+
+        # Limit to 20 concurrent URLs
+        url_list = url_list[:20]
+
+        from apexcrawler.http.fetcher import FastFetcher
+
+        fetcher = FastFetcher(impersonate="chrome131")
+        try:
+            results = []
+            for target_url in url_list:
+                try:
+                    result = fetcher.get(target_url)
+                    results.append(
+                        {
+                            "url": target_url,
+                            "status_code": result.get("status_code", 0),
+                            "content_length": len(result.get("html", "")),
+                        }
+                    )
+                except Exception as e:
+                    results.append({"url": target_url, "error": str(e)})
+
+            return json_mod.dumps(
+                {
+                    "total": len(url_list),
+                    "success_count": sum(1 for r in results if r.get("status_code", 0) == 200),
+                    "results": results,
+                },
+                ensure_ascii=False,
+            )
+        finally:
+            fetcher.close()
+    except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 

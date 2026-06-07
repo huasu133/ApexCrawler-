@@ -45,7 +45,35 @@ _FIREFOX_FINGERPRINT_PREFS = {
     "privacy.trackingprotection.fingerprinting.enabled": False,
     "privacy.trackingprotection.cryptomining.enabled": False,
     "privacy.firstparty.isolate": True,
-    "privacy.resistFingerprinting": False,  # Keep false — Camoufox handles this
+    "privacy.resistFingerprinting": True,         # Firefox's built-in RFP — enabled for layered protection
+
+    # ── Advanced fingerprint protection ──
+    "privacy.fingerprintingProtection": True,     # Firefox 130+ native protection
+    "privacy.fingerprintingProtection.pbmode": True,
+
+    # ── Canvas & WebGL ──
+    "webgl.disabled": False,        # Ensure WebGL is available (do not disable!)
+    "canvas.capture.enabled": False, # Prevent Canvas screenshot
+    "webgl.enable-webgl2": True,
+
+    # ── WebRTC leak prevention (enhanced) ──
+    "media.peerconnection.ice.obfuscate_host_addresses": True,
+    "media.peerconnection.ice.proxy_only_if_behind_proxy": True,
+    "media.peerconnection.turn.disable": True,
+
+    # ── Network & cache ──
+    "network.http.referer.XOriginPolicy": 2,       # Strict referer policy
+    "network.http.referer.trimmingPolicy": 2,
+    "network.cookie.cookieBehavior": 0,            # Allow all cookies
+    "network.cookie.lifetimePolicy": 0,            # Cookies persist until expiry
+    "network.IDN_show_punycode": False,
+
+    # ── Performance fingerprinting ──
+    "dom.enable_performance": True,
+    "dom.enable_resource_timing": True,
+
+    # ── Font fingerprint protection ──
+    "layout.css.font-visibility.level": 1,         # Limit font enumeration
 
     # ── Telemetry & data collection ──
     "toolkit.telemetry.enabled": False,
