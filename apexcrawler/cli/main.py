@@ -7,6 +7,7 @@ Supports:
     apex template list            List saved templates
     apex template use <name>      Use a saved template
     apex ask "<question>"         Natural language scraping
+    apex extract <url>            One-click content extraction
     apex config show              Show current configuration
     apex config validate          Validate configuration
     apex version                  Show version info
@@ -814,6 +815,167 @@ async def _try_http_extract(url: str, hints: dict) -> dict | None:
                     extracted["phone"] = m.group(1)
 
     return extracted if extracted else None
+
+
+# ── extract command ────────────────────────────────────────
+
+@cli.command()
+@click.argument("url")
+@click.option("--output", "-o", help="Output file path")
+@click.option("--selector", "-s", help="CSS selector to extract (e.g. 'h1', '.price', '#main')")
+@click.option("--attribute", "-a", help="Attribute to extract (default: inner text)")
+@click.option("--format", "-f", type=click.Choice(["txt", "md", "json"]), default="txt")
+@click.option("--fast", is_flag=True, help="Skip human-like timing delays")
+def extract(
+    url: str,
+    output: Optional[str],
+    selector: Optional[str],
+    attribute: Optional[str],
+    format: str,
+    fast: bool,
+) -> None:
+    """一键提取网页内容 — 无需编写代码。
+
+    使用轻量 FastFetcher（无需浏览器），支持 CSS 选择器精确提取
+    或自动识别正文内容。结果可输出到文件或标准输出。
+
+    \b
+    示例:
+        apex extract https://example.com
+        apex extract https://example.com -s "h1" -o title.txt
+        apex extract https://example.com -s "article" -f md
+        apex extract https://example.com -s "a" -a href -f json
+    """
+    # SSRF protection
+    try:
+        _validate_url(url)
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    # ── Fetch page ──────────────────────────────────────────
+    from ..http.fetcher import FastFetcher
+
+    click.echo(f"Fetching: {url}")
+    if fast:
+        click.echo("  Mode: fast (no delays)")
+
+    fetcher = FastFetcher(timeout=30)
+    try:
+        result = fetcher.get(url)
+    except Exception as e:
+        click.echo(f"Fetch failed: {e}", err=True)
+        sys.exit(1)
+    finally:
+        fetcher.close()
+
+    if result["status_code"] != 200:
+        click.echo(
+            f"HTTP {result['status_code']} — expected 200",
+            err=True,
+        )
+        if result["status_code"] == 0:
+            sys.exit(1)
+
+    html: str = result["html"]  # type: ignore[assignment]
+    status = result["status_code"]
+
+    click.echo(f"  Status: {status}  |  Size: {len(html):,} bytes")
+
+    if not html.strip():
+        click.echo("Empty response body.", err=True)
+        sys.exit(1)
+
+    # ── Extract content ─────────────────────────────────────
+    extracted: list[dict[str, str]] = []
+
+    if selector:
+        # CSS selector-based extraction
+        try:
+            from lxml.html import fromstring
+        except ImportError:
+            click.echo("lxml is required for CSS selector extraction.", err=True)
+            sys.exit(1)
+
+        try:
+            doc = fromstring(html)
+            elements = doc.cssselect(selector)
+        except Exception as e:
+            click.echo(f"Selector error: {e}", err=True)
+            sys.exit(1)
+
+        if not elements:
+            click.echo(f"No elements matched selector: {selector}", err=True)
+            sys.exit(1)
+
+        for el in elements:
+            if attribute:
+                value = el.get(attribute, "")
+            else:
+                # inner text, cleaned
+                value = el.text_content().strip()
+            # Keep a rough location hint
+            tag = el.tag if hasattr(el, "tag") else ""
+            extracted.append({"tag": tag, "text": value})
+    else:
+        # Auto-extract: find main content area
+        try:
+            from lxml.html import fromstring
+        except ImportError:
+            click.echo("lxml is required for content extraction.", err=True)
+            sys.exit(1)
+
+        doc = fromstring(html)
+        # Try <article> first, then <main>, then <body>
+        content_el = doc.cssselect("article")
+        if not content_el:
+            content_el = doc.cssselect("main")
+        if not content_el:
+            content_el = doc.cssselect("body")
+        if content_el:
+            raw_text = content_el[0].text_content().strip()
+        else:
+            raw_text = doc.text_content().strip()
+
+        # Clean whitespace
+        import re
+        lines = [l.strip() for l in raw_text.split("\n") if l.strip()]
+        clean = " ".join(lines)
+        clean = re.sub(r"\s{2,}", " ", clean)
+        extracted = [{"tag": "content", "text": clean}]
+
+    # ── Output ──────────────────────────────────────────────
+    if format == "json":
+        output_data = {
+            "url": url,
+            "status": status,
+            "selector": selector or "auto",
+            "count": len(extracted),
+            "results": extracted,
+        }
+        output_str = json.dumps(output_data, indent=2, ensure_ascii=False)
+    elif format == "md":
+        lines_out: list[str] = []
+        lines_out.append(f"# Extracted from {url}\n")
+        for item in extracted:
+            text = item["text"]
+            lines_out.append(text)
+            lines_out.append("")
+        output_str = "\n".join(lines_out)
+    else:
+        # txt
+        output_str = "\n\n".join(item["text"] for item in extracted)
+        # Strip trailing newline
+        output_str = output_str.rstrip("\n")
+
+    # Write or print
+    if output:
+        out_path = Path(output)
+        out_path.write_text(output_str, encoding="utf-8")
+        click.echo(f"\nWritten: {out_path} ({len(output_str):,} chars)")
+    else:
+        click.echo("\n" + "─" * 50)
+        click.echo(output_str)
 
 
 # ── dashboard command ──────────────────────────────────────
