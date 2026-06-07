@@ -8,4 +8,11 @@ build/
 .venv/
 node_modules/
 .DS_Store
-node_modules/
+
+# Test output files
+Book *.txt
+我是*.txt
+*.html
+*.png
+screenshot_*
+example.com.*
