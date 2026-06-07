@@ -162,6 +162,12 @@ class CookieJarStore:
     def exists(self) -> bool:
         return self._path.exists()
 
+    def clear(self) -> None:
+        """删除持久化的 Cookie 文件。"""
+        if self._path.exists():
+            self._path.unlink()
+            logger.info("Cookie 存储已清除: %s", self._path)
+
 
 # ══════════════════════════════════════════════════════════════════════
 # QidianEngine
@@ -596,18 +602,7 @@ class QidianEngine(BaseEngine):
         # 如果 WAF 绕过时已经拿到了章节数据，直接使用
         if hasattr(self, '_chapters_data') and self._chapters_data:
             logger.info("使用 WAF 绕过时提取的章节数据 (%d 章)", len(self._chapters_data))
-            for i, ch_data in enumerate(self._chapters_data, 1):
-                ch_id_match = re.search(r'/(\d+)/?$', ch_data.get("href", ""))
-                ch_id = int(ch_id_match.group(1)) if ch_id_match else 0
-                chapters.append(Chapter(
-                    chapter_id=ch_id,
-                    book_id=book_id,
-                    title=ch_data.get("title", ""),
-                    index=i,
-                    is_vip=ch_data.get("is_vip", False),
-                    url=f"https:{ch_data['href']}" if ch_data.get("href", "").startswith("//") else ch_data.get("href", ""),
-                ))
-            self._chapters_data = []  # 用完后清空
+            chapters = self._parse_chapters_from_data(book_id)
             if chapters:
                 self._catalog_cache[book_id] = CatalogCache(
                     book_id=book_id, chapters=chapters
@@ -629,7 +624,25 @@ class QidianEngine(BaseEngine):
 
         if resp["status_code"] != 200:
             logger.error("获取目录失败: HTTP %d", resp["status_code"])
-            return []
+            # Cookie 可能过期 → 清除并重试 WAF 绕过
+            if resp["status_code"] in (202, 403) and curl_cookies:
+                logger.info("Cookie 已过期，清除并执行 WAF 绕过...")
+                self._cookie_store.clear()
+                try:
+                    curl_cookies = self._bypass_waf_and_fetch_cookies(book_id=book_id)
+                    if hasattr(self, '_chapters_data') and self._chapters_data:
+                        chapters = self._parse_chapters_from_data(book_id)
+                        if chapters:
+                            self._catalog_cache[book_id] = CatalogCache(book_id=book_id, chapters=chapters)
+                            logger.info("WAF 绕过章节提取完成: %d 章", len(chapters))
+                            return chapters
+                    # 用新 Cookie 重试 API
+                    session = self._get_curl_session(cookies=curl_cookies)
+                    resp = self._curl_get(session, self.CATEGORY_API, params=params, headers=api_headers)
+                except Exception as e:
+                    logger.warning("WAF 绕过重试也失败: %s", e)
+            if resp["status_code"] != 200 and resp["status_code"] != 202:
+                return []
 
         data = resp.get("json") or {}
         chapters: List[Chapter] = []
@@ -653,7 +666,7 @@ class QidianEngine(BaseEngine):
                     )
                     chapters.append(chapter)
 
-        # API 返回空 → 降级到 HTML 解析
+        # API 返回空（含 202 降级后重试）→ 降级到 HTML 解析
         if not chapters:
             logger.info("API 返回空目录，降级到 HTML 页面解析 (book_id=%d)", book_id)
             try:
@@ -662,11 +675,45 @@ class QidianEngine(BaseEngine):
             except Exception as e:
                 logger.warning("HTML 解析也失败: %s", e)
 
+            # HTML 降级也失败且有 Cookie → Cookie 可能过期，尝试 WAF 绕过
+            if not chapters and curl_cookies:
+                logger.info("Cookie 可能已过期，清除并执行 WAF 绕过...")
+                self._cookie_store.clear()
+                try:
+                    curl_cookies = self._bypass_waf_and_fetch_cookies(book_id=book_id)
+                    if hasattr(self, '_chapters_data') and self._chapters_data:
+                        chapters = self._parse_chapters_from_data(book_id)
+                        if chapters:
+                            self._catalog_cache[book_id] = CatalogCache(book_id=book_id, chapters=chapters)
+                            logger.info("WAF 绕过章节提取完成: %d 章", len(chapters))
+                            return chapters
+                except Exception as e:
+                    logger.warning("WAF 绕过重试也失败: %s", e)
+
         self._catalog_cache[book_id] = CatalogCache(
             book_id=book_id, chapters=chapters
         )
 
         logger.info("获取完成: book_id=%d, 共 %d 章", book_id, len(chapters))
+        return chapters
+
+    def _parse_chapters_from_data(self, book_id: int) -> List[Chapter]:
+        """从 _chapters_data（WAF 绕过时提取的 DOM 数据）解析 Chapter 列表。"""
+        import re
+        chapters: List[Chapter] = []
+        for i, ch_data in enumerate(self._chapters_data, 1):
+            ch_id_match = re.search(r'/(\d+)/?$', ch_data.get("href", ""))
+            ch_id = int(ch_id_match.group(1)) if ch_id_match else 0
+            href = ch_data.get("href", "")
+            chapters.append(Chapter(
+                chapter_id=ch_id,
+                book_id=book_id,
+                title=ch_data.get("title", ""),
+                index=i,
+                is_vip=ch_data.get("is_vip", False),
+                url=f"https:{href}" if href.startswith("//") else href,
+            ))
+        self._chapters_data = []
         return chapters
 
     # ── HTML 解析降级 ─────────────────────────────────────────────
@@ -777,18 +824,9 @@ class QidianEngine(BaseEngine):
             await page.wait_for_load_state("networkidle", timeout=30_000)
             await asyncio.sleep(3)
 
-            # 通过 evaluate 提取正文
-            text = await page.evaluate("""() => {
-                const selectors = ['.read-content', '#chapter-content', '.content', '[class*=\"content\"] p', '.j_readContent', '.article-content'];
-                for (const sel of selectors) {
-                    const el = document.querySelector(sel);
-                    if (el && el.innerText.trim().length > 100) {
-                        return el.innerText.trim();
-                    }
-                }
-                return document.body.innerText.trim();
-            }""")
-            return text or ""
+            # 返回完整 HTML 交给 _extract_full 处理（含字体解码和内容清洗）
+            html = await page.content()
+            return html or ""
         finally:
             await browser.close()
 
@@ -822,12 +860,15 @@ class QidianEngine(BaseEngine):
             try:
                 import cloakbrowser
                 import asyncio
-                browser = asyncio.run(self._fetch_chapter_via_browser(url))
-                if browser:
-                    chapter_info.content = browser
+                browser_html = asyncio.run(self._fetch_chapter_via_browser(url))
+                if browser_html:
+                    text, metadata = self._extract_full(browser_html)
+                    chapter_info.content = text
+                    if metadata.get("title"):
+                        chapter_info.title = metadata["title"]
                     chapter_info.fetched_at = datetime.now()
-                    if not chapter_info.word_count:
-                        chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", browser))
+                    if not chapter_info.word_count and text:
+                        chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", text))
                         chapter_info.word_count = chinese_chars
                     logger.info("浏览器渲染获取章节成功: %d 字", chapter_info.word_count)
                     return chapter_info
@@ -858,37 +899,86 @@ class QidianEngine(BaseEngine):
         self, chapters: List[Chapter], max_workers: int = 1
     ) -> List[Chapter]:
         """
-        批量获取章节正文（建议串行，加入延迟）。
+        批量获取章节正文 — 优先使用单个 CloakBrowser 会话批量渲染（更快）。
 
         Args:
             chapters: Chapter 列表
-            max_workers: 并发数（建议保持 1）
+            max_workers: 并发数（暂不支持并发）
 
         Returns:
             填充了正文的 Chapter 列表
         """
-        results = []
-        for i, chapter in enumerate(chapters):
-            if chapter.is_vip:
-                logger.info("跳过付费章节: %s", chapter.title)
-                results.append(chapter)
-                continue
+        # WAF 拦截 curl_cffi → 直接使用浏览器批量渲染
+        if len(chapters) > 1:
+            return asyncio.run(self._batch_fetch_via_browser(chapters))
 
-            if i > 0 and max_workers == 1:
-                delay = 2 + (i % 3)
-                time.sleep(delay)
+        # 单章走常规路径
+        for ch in chapters:
+            if not ch.is_vip:
+                result = self.fetch_chapter(ch)
+                return [result]
+        return chapters
 
-            result = self.fetch_chapter(chapter)
-            results.append(result)
+    async def _batch_fetch_via_browser(self, chapters: List[Chapter]) -> List[Chapter]:
+        """
+        使用单个 CloakBrowser 会话批量获取章节内容，避免每章启动一次浏览器。
+        """
+        import cloakbrowser
+        logger.info("启动 CloakBrowser 批量获取 %d 章...", len(chapters))
 
-            logger.info(
-                "进度: %d/%d (%.1f%%)",
-                i + 1,
-                len(chapters),
-                (i + 1) / len(chapters) * 100,
-            )
+        browser = await cloakbrowser.launch_async(headless=False)
+        try:
+            context = await browser.new_context()
 
-        return results
+            # 注入已保存的 Cookie
+            stored = self._cookie_store.load()
+            if stored:
+                for c in stored:
+                    try:
+                        await context.add_cookies([{
+                            "name": c["name"],
+                            "value": c["value"],
+                            "domain": ".qidian.com",
+                            "path": "/",
+                        }])
+                    except Exception:
+                        pass
+                logger.debug("已注入 %d 个 Cookie", len(stored))
+
+            page = await context.new_page()
+            total = len(chapters)
+
+            for i, ch in enumerate(chapters):
+                if ch.is_vip:
+                    continue
+
+                url = ch.url or self.CHAPTER_URL_TEMPLATE.format(
+                    book_id=ch.book_id, chapter_id=ch.chapter_id
+                )
+                try:
+                    await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                    await page.wait_for_load_state("networkidle", timeout=30_000)
+                    await asyncio.sleep(2)
+
+                    # 获取完整 HTML，通过 _extract_full 处理（含字体解码和内容清洗）
+                    html = await page.content()
+                    if html:
+                        text, _ = self._extract_full(html)
+                        ch.content = text or ""
+                    ch.fetched_at = datetime.now()
+                    if ch.content:
+                        chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", ch.content))
+                        ch.word_count = chinese_chars
+
+                except Exception as e:
+                    logger.warning("批量获取章节 %s 失败: %s", ch.title, e)
+
+                logger.info("批量进度: %d/%d (%.0f%%)", i + 1, total, (i + 1) / total * 100)
+
+        finally:
+            await browser.close()
+
+        return chapters
 
     # ── 阅读行为模拟 ──────────────────────────────────────────────────
 
@@ -1232,6 +1322,15 @@ class QidianEngine(BaseEngine):
         ".chapter-content",
         "#chaptercontent",
         ".content-wrap",
+        # Qidian 新版页面
+        ".main-content-wrap",
+        ".page-content",
+        ".chapter-wrap",
+        "#content",
+        ".content",
+        "#chapter-container",
+        ".reader-main",
+        ".article-content",
     ]
 
     AD_SELECTORS = [
@@ -1248,6 +1347,18 @@ class QidianEngine(BaseEngine):
         '[id*="ad-"]',
         ".chapter-end",
         ".author-say",
+        # Qidian 干扰元素
+        ".chapter-title",
+        ".j_chapterName",
+        ".chapter-word",
+        ".j_chapterWord",
+        ".chapter-info",
+        ".chapter-tooltip",
+        ".reader-footer",
+        ".reader-tool",
+        ".reader-control",
+        ".j_chapterFooter",
+        ".chapter-feedback",
     ]
 
     # ── 核心提取 ──────────────────────────────────────────────────────

@@ -74,13 +74,32 @@ class QidianAdapter(SiteAdapter):
 
     def download(self, book: BookInfo, chapters: List[Chapter], output: str = "txt") -> str:
         import os, time
+        from apexcrawler.engines.qidian import Chapter as QChapter
+
         filename = f"{book.title or book.book_id}_{int(time.time())}.{output}"
+
+        # 转换为引擎内部的 Chapter 对象
+        engine_chapters = [
+            QChapter(
+                chapter_id=int(ch.chapter_id) if ch.chapter_id else 0,
+                book_id=int(book.book_id),
+                title=ch.title,
+                index=ch.index,
+                is_vip=ch.is_vip,
+                url=ch.url,
+            )
+            for ch in chapters
+        ]
+
+        # 使用引擎的批量获取（如果 curl_cffi 被 WAF 拦截，自动降级到单浏览器会话批量渲染）
+        fetched = self.engine.fetch_chapters(engine_chapters)
+
         content_lines = []
-        total = len(chapters)
-        for i, ch in enumerate(chapters):
-            logger.info("下载进度: %d/%d (%.0f%%)", i + 1, total, (i + 1) / total * 100)
-            text = self.fetch_chapter(ch)
+        total = len(fetched)
+        for i, ch in enumerate(fetched):
+            text = ch.content or ""
             content_lines.append(f"\n\n第{ch.index}章 {ch.title}\n\n{text}\n")
+            logger.info("下载进度: %d/%d (%.0f%%)", i + 1, total, (i + 1) / total * 100)
 
         path = os.path.join(os.getcwd(), filename)
         with open(path, "w", encoding="utf-8") as f:

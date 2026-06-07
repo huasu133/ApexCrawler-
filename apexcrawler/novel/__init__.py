@@ -1,6 +1,9 @@
 """Novel crawling framework — multi-site unified novel downloader."""
 
-from apexcrawler.novel.engine import NovelEngine
-from apexcrawler.novel.adapter_base import SiteAdapter
+# 导入适配器模块，触发 @register_adapter 装饰器注册
+from apexcrawler.novel import qidian_adapter  # noqa: F401
 
-__all__ = ["NovelEngine", "SiteAdapter"]
+from apexcrawler.novel.engine import NovelEngine
+from apexcrawler.novel.adapter_base import SiteAdapter, Chapter, BookInfo
+
+__all__ = ["NovelEngine", "SiteAdapter", "Chapter", "BookInfo"]
