@@ -26,6 +26,7 @@ class FontDecoder:
         base.mkdir(parents=True, exist_ok=True)
         self._cache_dir = base
         self._mapping_cache: Dict[str, Dict[str, str]] = {}
+        self._ocr = None
 
     def decode_html(self, html: str, font_url: str | None = None) -> str:
         """Decode font-encrypted text in HTML.
@@ -91,7 +92,9 @@ class FontDecoder:
 
         try:
             import httpx
-            r = httpx.get(url, follow_redirects=True, timeout=15)
+            r = httpx.get(url, follow_redirects=True, timeout=15, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0",
+            })
             if r.status_code == 200:
                 cached.write_bytes(r.content)
                 logger.debug("Font downloaded: %s (%d bytes)", url, len(r.content))
@@ -129,12 +132,14 @@ class FontDecoder:
             # Render each glyph and OCR it
             try:
                 from PIL import Image, ImageDraw, ImageFont
-                import ddddocr
-                ocr = ddddocr.DdddOcr()
+                if self._ocr is None:
+                    import ddddocr
+                    self._ocr = ddddocr.DdddOcr()
 
                 # Find glyph outlines
                 glyf_table = font.get("glyf")
                 if glyf_table:
+                    pil_font = ImageFont.truetype(font_path, 48)
                     for char_code, glyph_name in cmap.items():
                         if char_code < 0x20:
                             continue
@@ -144,7 +149,6 @@ class FontDecoder:
                                 continue
 
                             # Render glyph to image
-                            pil_font = ImageFont.truetype(font_path, 48)
                             char = chr(char_code)
                             img = Image.new("L", (64, 64), 255)
                             draw = ImageDraw.Draw(img)
@@ -157,7 +161,7 @@ class FontDecoder:
                             draw2 = ImageDraw.Draw(img2)
                             draw2.text((4, 4), char, font=pil_font, fill=0)
 
-                            result = ocr.classification(img2)
+                            result = self._ocr.classification(img2)
                             if result and result != char and len(result) == 1:
                                 mapping[char] = result
                         except Exception:

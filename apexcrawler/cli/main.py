@@ -143,7 +143,7 @@ def cli(ctx: click.Context, log_level: str, json_log: bool, quiet: bool, verbose
 
 # ── crawl command ──────────────────────────────────────────
 
-@cli.command(hidden=True)
+@cli.command()
 @click.argument("url", required=False)
 @click.option("--batch", "-b", "batch_file", type=click.Path(exists=True), help="包含 URL 的文件（每行一个）")
 @click.option("--output", "-o", "output_file", type=click.Path(), help="结果输出文件（JSON 格式）")
@@ -216,11 +216,7 @@ def crawl(
         click.echo("No URLs to crawl.", err=True)
         sys.exit(1)
 
-    import os
-    # 清除系统代理环境变量，防止干扰爬取请求
-    for _k in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']:
-        os.environ.pop(_k, None)
-
+    # 代理通过 Settings 和 proxy_url 参数控制，不再全局修改 os.environ
     # Load settings from YAML (fallback to env vars)
     try:
         settings = Settings.from_yaml()
@@ -982,14 +978,14 @@ async def _try_http_extract(url: str, hints: dict) -> dict | None:
 @click.option("--output", "-o", help="输出文件路径")
 @click.option("--selector", "-s", help="CSS 选择器（如 'h1'、'.price'、'#main'）")
 @click.option("--attribute", "-a", help="提取的属性（默认：文本内容）")
-@click.option("--format", "-f", type=click.Choice(["txt", "md", "json"]), default="txt")
+@click.option("--format", "output_format", type=click.Choice(["txt", "md", "json"]), default="txt")
 @click.option("--fast", is_flag=True, help="跳过人类行为模拟延迟")
 def extract(
     url: str,
     output: Optional[str],
     selector: Optional[str],
     attribute: Optional[str],
-    format: str,
+    output_format: str,
     fast: bool,
 ) -> None:
     """一键提取网页内容 — 无需编写代码。
@@ -1103,7 +1099,7 @@ def extract(
         extracted = [{"tag": "content", "text": clean}]
 
     # ── Output ──────────────────────────────────────────────
-    if format == "json":
+    if output_format == "json":
         output_data = {
             "url": url,
             "status": status,
@@ -1112,7 +1108,7 @@ def extract(
             "results": extracted,
         }
         output_str = json.dumps(output_data, indent=2, ensure_ascii=False)
-    elif format == "md":
+    elif output_format == "md":
         lines_out: list[str] = []
         lines_out.append(f"# Extracted from {url}\n")
         for item in extracted:
@@ -1161,19 +1157,24 @@ def search_cmd(query: str, num: int, provider: str, crawl: int, llm: str) -> Non
             click.echo(f"     {r.snippet[:120]}...")
         click.echo()
     
-    # Optional: crawl top N results
+    # Optional: crawl top N results (并发)
     if crawl > 0:
         click.echo(f"--- 正在爬取前 {min(crawl, len(results))} 个结果 ---\n")
-        from apexcrawler.get import get
-        for r in results[:crawl]:
-            click.echo(f"=== {r.title} ===")
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from apexcrawler.get import get as _get
+        def _fetch(r):
             try:
-                content = get(r.link, timeout=15)
+                return r, _get(r.link, timeout=15)
+            except Exception as e:
+                return r, None
+        with ThreadPoolExecutor(max_workers=crawl) as pool:
+            futures = {pool.submit(_fetch, r): r for r in results[:crawl]}
+            for f in as_completed(futures):
+                r, content = f.result()
+                click.echo(f"=== {r.title} ===")
                 if content:
                     click.echo(content[:1000])
-            except Exception as e:
-                click.echo(f"  抓取失败: {e}", err=True)
-            click.echo()
+                click.echo()
     
     # Optional: LLM summary
     if llm:
@@ -1279,21 +1280,21 @@ def dashboard(port: int, no_open: bool) -> None:
 @click.option("--engine", "-e", default="", help="引擎类型 (cloaked_v2, camoufox, patched, vanilla)")
 @click.option("--proxy", "-p", default="", help="代理地址")
 @click.option("--timeout", "-t", type=int, default=30, help="超时秒数")
-@click.option("--output", "-o", type=click.Choice(["html", "text"]), default="html", help="输出格式")
+@click.option("--format", "fmt", type=click.Choice(["html", "text"]), default="html", help="输出格式")
 @click.option("--llm", "-l", default="", help="LLM 提供者 (如 openai/gpt-4o)")
 @click.option("--instruction", "-i", default="", help="LLM 提取指令")
 @click.option("--schema", "-s", default="", help="结构化提取 JSON Schema")
 @click.option("--filter", "-f", "filter_q", default="", help="内容过滤关键词 (BM25)")
 @click.pass_context
 def get_cmd(ctx: click.Context, url: str, engine: str, proxy: str,
-            timeout: int, output: str, llm: str, instruction: str,
+            timeout: int, fmt: str, llm: str, instruction: str,
             schema: str, filter_q: str) -> None:
     """快速获取页面内容。完全静默，只输出内容，不输出日志和元数据。
 
     示例:
         apex get https://example.com
         apex get https://example.com --engine cloaked_v2
-        apex get https://example.com -o text
+        apex get https://example.com --format text
     """
     import re
     _validate_url(url)
@@ -1319,7 +1320,7 @@ def get_cmd(ctx: click.Context, url: str, engine: str, proxy: str,
 
     try:
         from apexcrawler.get import get
-        content = get(url, engine=engine, proxy=proxy, timeout=timeout, output=output)
+        content = get(url, engine=engine, proxy=proxy, timeout=timeout, output=fmt)
 
         # LLM extraction after getting content
         if llm and content:

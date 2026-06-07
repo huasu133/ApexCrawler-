@@ -38,6 +38,8 @@ class CloakedV2Engine(BaseEngine):
     all lower-tier engines, including CloakedEngine v1.
     """
 
+    _PROFILE_NAME = "cloaked_v2_default"
+
     def __init__(self, headless: bool = True, viewport: dict | None = None,
                  executable_path: str | None = None) -> None:
         self._headless = headless
@@ -88,7 +90,7 @@ class CloakedV2Engine(BaseEngine):
 
         # Inject DeviceProfile init script for consistent fingerprint
         from apexcrawler.fingerprint.consistency import DeviceProfile
-        profile = DeviceProfile(name="cloaked_v2_default")
+        profile = DeviceProfile(name=self._PROFILE_NAME)
         await self._context.add_init_script(profile.cdp_inject_script())
 
         # Inject WASM interceptor for SIMD neutralization
@@ -115,7 +117,7 @@ class CloakedV2Engine(BaseEngine):
             await self._wasm_interceptor.inject(self._page)
             # Re-inject DeviceProfile init script for new context
             from apexcrawler.fingerprint.consistency import DeviceProfile
-            profile = DeviceProfile(name="cloaked_v2_default")
+            profile = DeviceProfile(name=self._PROFILE_NAME)
             await self._context.add_init_script(profile.cdp_inject_script())
         await self._page.goto(url, wait_until="networkidle", timeout=30000)
         try:

@@ -315,7 +315,8 @@ def clean_record(data: dict[str, Any]) -> dict[str, Any]:
         if any(kw in kl for kw in ("price", "amount", "cost", "fee")):
             price, curr = clean_price(value)
             cleaned[key] = price
-            cleaned[f"{key}_currency"] = curr
+            if not key.endswith("_currency"):
+                cleaned[f"{key}_currency"] = curr
         elif any(kw in kl for kw in ("date", "time", "created", "updated", "published", "modified")):
             cleaned[key] = clean_date(value)
         elif "url" in kl or "link" in kl or kl.endswith("_href"):

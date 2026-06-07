@@ -147,7 +147,7 @@ def filter_content(html: str, config: ContentFilterConfig) -> str:
             )
 
         md_generator = DefaultMarkdownGenerator(content_filter=filter_inst)
-        result = md_generator.generate(html)
+        result = md_generator.generate_markdown(html)
         return result.markdown or ""
 
     except Exception as e:

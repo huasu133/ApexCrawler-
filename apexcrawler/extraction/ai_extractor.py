@@ -19,6 +19,11 @@ class AIExtractor(Extractor[T]):
         self._llm = llm_client
         self._cache = cache_backend
         self.confidence_threshold = confidence_threshold
+        try:
+            from ..config.schema import Settings
+            self._settings = Settings()
+        except Exception:
+            self._settings = None
     
     @property
     def confidence_threshold(self) -> float:
@@ -269,12 +274,8 @@ Return ONLY valid JSON. Use null for missing fields."""
     async def _try_llm(self, html: str, fields: list[str] | None = None, url: str = "") -> dict | None:
         """Use LLM to extract fields from HTML as fallback."""
         # 如果没有配置 LLM，跳过
-        try:
-            from ..config.schema import Settings
-            settings = Settings()
-            if not settings.llm or not settings.llm.api_key:
-                return None
-        except Exception:
+        settings = self._settings
+        if not settings or not settings.llm or not settings.llm.api_key:
             return None
 
         # 先尝试结构化提取

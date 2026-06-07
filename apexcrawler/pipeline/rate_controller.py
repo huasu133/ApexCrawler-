@@ -61,12 +61,11 @@ class RateController:
     async def throttle(self):
         """根据当前速率等待适当时间。"""
         interval = 1.0 / self.current_rate if self.current_rate > 0 else 20
-        elapsed = time.monotonic() - self._last_request
-        if elapsed < interval:
-            wait_time = interval - elapsed
-            await asyncio.sleep(wait_time)
         async with self._lock:
+            elapsed = time.monotonic() - self._last_request
             self._last_request = time.monotonic()
+        if elapsed < interval:
+            await asyncio.sleep(interval - elapsed)
         self._maybe_recover()
 
     def signal(self, status: int = 0, html: str = ""):
@@ -104,8 +103,8 @@ class RateController:
     async def get_delay(self) -> float:
         """Get the wait time before next request based on current rate."""
         interval = 1.0 / self.current_rate if self.current_rate > 0 else 20
-        elapsed = time.monotonic() - self._last_request
         async with self._lock:
+            elapsed = time.monotonic() - self._last_request
             self._last_request = time.monotonic()
         if elapsed < interval:
             return max(0, interval - elapsed)

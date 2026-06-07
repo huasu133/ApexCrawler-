@@ -62,4 +62,5 @@ def get(url: str, engine: str = "", proxy: str = "", timeout: int = 30,
         ) from e
     except Exception as e:
         logger.error("Failed to fetch %s: %s", url, e)
+        logger.debug("Full traceback:", exc_info=True)
         return ""

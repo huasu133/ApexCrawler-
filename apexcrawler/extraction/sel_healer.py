@@ -273,7 +273,10 @@ class SelHealer:
         return None
 
     def _heal_structural_context(self, html: str, original_selector: str) -> str | None:
-        """Level 3: Navigate via parent/sibling structural context."""
+        """Level 3: Navigate via parent/sibling structural context.
+        
+        TODO: accept and use PipelineContext for richer structural healing.
+        """
         tree = lhtml.fromstring(html)
         # Try parent-child relationships
         tag_match = re.search(r"^(\w+)", original_selector)

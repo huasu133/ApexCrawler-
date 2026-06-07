@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import httpx
 import json
 import logging
 import os
@@ -335,7 +336,6 @@ class ExtractStage:
             )
 
         try:
-            import httpx
             from urllib.parse import urlparse, urlunparse
             from ..utils.dns_cache import dns_cache
 
@@ -655,7 +655,10 @@ class StoreStage:
 
     def __init__(self, cache_dir: str | None = None):
         self._cache_dir = cache_dir or _DEFAULT_CACHE_DIR
-        os.makedirs(self._cache_dir, exist_ok=True)
+        try:
+            os.makedirs(self._cache_dir, exist_ok=True)
+        except OSError as e:
+            logger.warning(f"Failed to create cache dir {self._cache_dir}: {e}")
 
     def _get_cache_path(self, url: str) -> Path:
         """Get filesystem path for URL cache."""
