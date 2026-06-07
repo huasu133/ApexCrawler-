@@ -6,7 +6,7 @@ QidianEngine — 起点中文网专用爬取引擎。
 
 使用 Playwright 有头浏览器过腾讯云 WAF，curl_cffi 做批量数据通道。
 
-这是一个独立工具引擎，不继承 ApexCrawler 的 BaseEngine 体系。
+已通过 @EngineRegistry.register 注册到 ApexCrawler 引擎体系。
 """
 
 from __future__ import annotations
@@ -25,6 +25,9 @@ from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from apexcrawler.engines.base import BaseEngine, EngineCapability
+from apexcrawler.routing.registry import EngineRegistry
 
 try:
     from bs4 import BeautifulSoup, Tag as BsTag
@@ -119,11 +122,54 @@ class FontMapping:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# CookieJarStore — 持久化 Cookie 存储
+# ══════════════════════════════════════════════════════════════════════
+
+
+class CookieJarStore:
+    """Persistent cookie store for Qidian cookies with TTL and auto-expiry."""
+
+    def __init__(self, storage_dir: str | None = None):
+        base = Path(storage_dir) if storage_dir else Path.home() / ".apexcrawler" / "qidian"
+        base.mkdir(parents=True, exist_ok=True)
+        self._path = base / "cookies.json"
+        self._ttl = 86400  # 24h default
+
+    def save(self, cookies: list[dict]) -> None:
+        data = {
+            "saved_at": time.time(),
+            "cookies": cookies,
+        }
+        self._path.write_text(json.dumps(data, ensure_ascii=False))
+
+    def load(self) -> list[dict] | None:
+        if not self._path.exists():
+            return None
+        try:
+            data = json.loads(self._path.read_text())
+            elapsed = time.time() - data.get("saved_at", 0)
+            if elapsed > self._ttl:
+                return None  # Expired
+            return data.get("cookies", [])
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    def to_curl_format(self, cookies: list[dict]) -> dict[str, str]:
+        """Convert Playwright cookies to curl-cffi header format."""
+        return {c["name"]: c["value"] for c in cookies}
+
+    @property
+    def exists(self) -> bool:
+        return self._path.exists()
+
+
+# ══════════════════════════════════════════════════════════════════════
 # QidianEngine
 # ══════════════════════════════════════════════════════════════════════
 
 
-class QidianEngine:
+@EngineRegistry.register
+class QidianEngine(BaseEngine):
     """
     起点中文网专用爬取引擎。
 
@@ -139,6 +185,17 @@ class QidianEngine:
         # 3) 提取正文
         engine.fetch_chapters(chapters)
     """
+
+    @classmethod
+    def capability(cls) -> EngineCapability:
+        return EngineCapability(
+            name="qidian",
+            fingerprint_resistance=8,
+            ja4_diversity=5,
+            dom_automation=8,
+            resource_cost=5,
+            tags=["qidian", "novel", "firefox", "camoufox", "waf-bypass"],
+        )
 
     # 起点 URL 常量
     QIDIAN_URL = "https://www.qidian.com"
@@ -212,6 +269,9 @@ class QidianEngine:
         self._font_cache_dir.mkdir(parents=True, exist_ok=True)
         self._storage_dir = Path(storage_dir or base_dir / "qidian" / "output")
         self._storage_dir.mkdir(parents=True, exist_ok=True)
+
+        # CookieJarStore for persistent cookie storage
+        self._cookie_store = CookieJarStore()
 
         # 运行时状态
         self._curl_session: Optional[CurlSession] = None
@@ -373,6 +433,58 @@ class QidianEngine:
         finally:
             await page.close()
 
+    # ── WAF 绕过 + Cookie 持久化 ─────────────────────────────────────
+
+    def _bypass_waf_and_fetch_cookies(self) -> dict[str, str]:
+        """
+        使用 CamoufoxEngine (Firefox) 打开起点首页，等待 WAF 挑战通过，
+        提取 Cookie 并持久化保存。
+
+        Returns:
+            dict[str, str]: Cookie name→value 字典
+        """
+        cookies_list = asyncio.run(self._bypass_waf_and_fetch_cookies_async())
+        curl_cookies = self._cookie_store.to_curl_format(cookies_list)
+        self._cookie_store.save(cookies_list)
+        logger.info("WAF 绕过完成，已持久化 %d 个 Cookie", len(cookies_list))
+        return curl_cookies
+
+    async def _bypass_waf_and_fetch_cookies_async(self) -> list[dict]:
+        """
+        异步：使用 CamoufoxEngine 打开起点首页，等待 WAF 通过并提取 Cookie。
+        """
+        try:
+            from apexcrawler.engines.camouflaged import CamoufoxEngine
+        except ImportError:
+            raise ImportError(
+                "CamoufoxEngine 未找到，无法执行 WAF 绕过"
+            )
+
+        engine = CamoufoxEngine(
+            headless=self.headless,
+            viewport={"width": 1920, "height": 1080},
+        )
+        try:
+            await engine.launch()
+            await engine.navigate(self.QIDIAN_URL)
+
+            # 等待页面稳定（额外等待 WAF 完全通过）
+            if engine._page:
+                try:
+                    await self._wait_for_waf_pass(engine._page)
+                except Exception:
+                    pass
+                await asyncio.sleep(3)
+
+            # 提取 Cookie
+            if engine._context:
+                cookies = await engine._context.cookies()
+                logger.info("CamoufoxEngine 获取到 %d 个 Cookie", len(cookies))
+                return cookies
+            return []
+        finally:
+            await engine.close()
+
     # ── Cookie 管理 ───────────────────────────────────────────────────
 
     def save_cookies(self, cookies: List[Dict[str, str]], name: str = "qidian") -> str:
@@ -439,7 +551,22 @@ class QidianEngine:
                 logger.debug("使用缓存章节列表 (book_id=%d)", book_id)
                 return cached.chapters
 
-        session = self._get_curl_session()
+        # 检查 CookieJarStore 是否有有效 Cookie，没有则执行 WAF 绕过
+        curl_cookies = None
+        if self._cookie_store.exists:
+            stored = self._cookie_store.load()
+            if stored:
+                curl_cookies = self._cookie_store.to_curl_format(stored)
+                logger.info("使用持久化 Cookie (%d 个)", len(stored))
+
+        if not curl_cookies:
+            logger.info("Cookie 存储为空或已过期，执行 WAF 绕过...")
+            try:
+                curl_cookies = self._bypass_waf_and_fetch_cookies()
+            except Exception as e:
+                logger.warning("WAF 绕过失败: %s，将使用无 Cookie 请求", e)
+
+        session = self._get_curl_session(cookies=curl_cookies)
 
         logger.info("正在获取章节列表 (book_id=%d)", book_id)
         params = {"_csrfToken": "", "bookId": str(book_id)}
@@ -628,6 +755,13 @@ class QidianEngine:
 
     # ── 资源清理 ──────────────────────────────────────────────────────
 
+    async def launch(self) -> None:
+        """Not used. Use specific methods like fetch_catalog() directly."""
+        raise NotImplementedError("QidianEngine uses its own API. Use fetch_catalog() directly.")
+
+    async def navigate(self, url: str, proxy: str | None = None):
+        raise NotImplementedError("QidianEngine uses its own API.")
+
     async def close(self) -> None:
         """清理所有浏览器和 HTTP 会话。"""
         if self._playwright_context:
@@ -666,11 +800,16 @@ class QidianEngine:
         except RuntimeError:
             asyncio.run(self.close())
 
+    async def health_check(self) -> bool:
+        """Check if the engine has valid cookies available."""
+        cookie_file = self._cookie_dir / "qidian.json"
+        return cookie_file.exists()
+
     # ══════════════════════════════════════════════════════════════════
     # 内部方法 — curl_cffi 隐身客户端
     # ══════════════════════════════════════════════════════════════════
 
-    def _get_curl_session(self) -> CurlSession:
+    def _get_curl_session(self, cookies: dict[str, str] | None = None) -> CurlSession:
         """获取或创建 curl_cffi Session。"""
         if self._curl_session is None:
             if CurlSession is None:
@@ -681,6 +820,12 @@ class QidianEngine:
                     "http": self.proxy,
                     "https": self.proxy,
                 }
+
+        # Set cookies if provided
+        if cookies:
+            for name, value in cookies.items():
+                self._curl_session.cookies.set(name, value)
+
         return self._curl_session
 
     def _set_cookies_on_session(
@@ -1158,6 +1303,44 @@ class QidianEngine:
                 html = self._replace_obfuscated_chars(html, mapping)
         html = self._fallback_replace_pua(html)
         return html
+
+    def _decode_font_ocr(self, font_path: str) -> dict[str, str]:
+        """Use OCR to decode font glyphs as fallback."""
+        try:
+            import ddddocr
+            ocr = ddddocr.DdddOcr()
+            from PIL import Image, ImageDraw, ImageFont
+
+            from fontTools.ttLib import TTFont
+
+            font = TTFont(font_path)
+            cmap = font.getBestCmap()
+            mapping = {}
+
+            for char_code, glyph_name in cmap.items():
+                if char_code < 0x20:
+                    continue
+                try:
+                    pil_font = ImageFont.truetype(font_path, 32)
+                    char = chr(char_code)
+                    bbox = pil_font.getbbox(char)
+                    if bbox is None:
+                        continue
+                    w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+                    img = Image.new("L", (max(w, 16) + 8, max(h, 16) + 8), 255)
+                    draw = ImageDraw.Draw(img)
+                    draw.text((4, 4), char, font=pil_font, fill=0)
+                    result = ocr.classification(img)
+                    if result and len(result) == 1:
+                        mapping[str(char_code)] = result
+                except Exception:
+                    continue
+
+            font.close()
+            return mapping
+        except ImportError:
+            logger.debug("ddddocr 或 PIL 未安装，OCR 字体解码不可用")
+            return {}
 
     def _extract_font_urls(self, html: str) -> List[str]:
         """从 HTML 中提取自定义字体文件 URL。"""

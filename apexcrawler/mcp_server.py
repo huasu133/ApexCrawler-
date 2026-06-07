@@ -267,7 +267,7 @@ def _html_to_text(html: str) -> str:
 
 @server.tool(
     name="qidian_list",
-    description="获取起点中文网指定书籍的章节列表。book_id 为起点书籍 ID（数字）。",
+    description="获取起点中文网指定书籍的章节列表。自动过 WAF，无需登录即可获取免费章节。",
 )
 async def qidian_list(book_id: str) -> str:
     """获取起点章节列表。
@@ -276,31 +276,28 @@ async def qidian_list(book_id: str) -> str:
         book_id: 起点书籍 ID（如 "107580"）。
     """
     try:
-        from apexcrawler.api.qidian import CatalogFetcher
+        from apexcrawler.engines.qidian import QidianEngine
+        import json
 
-        fetcher = CatalogFetcher()
-        data = fetcher.get_free_chapters(book_id)
-
-        return json.dumps(
-            {
-                "book_id": book_id,
-                "total": data.get("total", 0),
-                "free_count": data.get("free_count", 0),
-                "vip_count": data.get("vip_count", 0),
-                "chapters": [
-                    {
-                        "title": ch.get("title", ""),
-                        "index": ch.get("index", 0),
-                        "is_free": ch.get("is_free", False),
-                        "words_count": ch.get("words_count", 0),
-                    }
-                    for ch in data.get("chapters", [])
-                ],
-            },
-            ensure_ascii=False,
-        )
+        engine = QidianEngine(headless=True)
+        chapters = engine.fetch_catalog(int(book_id))
+        result = []
+        for ch in chapters:
+            result.append({
+                "index": ch.index,
+                "title": ch.title,
+                "is_vip": ch.is_vip,
+                "word_count": ch.word_count,
+                "chapter_id": ch.chapter_id,
+            })
+        return json.dumps({
+            "book_id": book_id,
+            "total": len(result),
+            "free_count": sum(1 for c in result if not c["is_vip"]),
+            "chapters": result,
+        }, ensure_ascii=False)
     except Exception as e:
-        logger.exception("qidian_list tool failed")
+        import json
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 

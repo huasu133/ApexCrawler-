@@ -1434,6 +1434,31 @@ def get_cmd(ctx: click.Context, url: str, engine: str, proxy: str, timeout: int,
         apex get https://example.com --engine cloaked_v2
         apex get https://example.com -o text
     """
+    import re
+    # Detect Qidian book URLs
+    qidian_match = re.search(r'(?:book\.)?qidian\.com/(?:info|book)/(\d+)', url)
+    if qidian_match:
+        book_id = int(qidian_match.group(1))
+        click.echo(f"Detected Qidian novel (book_id={book_id})")
+        from apexcrawler.engines.qidian import QidianEngine
+        eng = QidianEngine(headless=True)
+        chapters = eng.fetch_catalog(book_id)
+        if not chapters:
+            click.echo("Failed to fetch catalog. Try with --engine cloaked_v2", err=True)
+            # Fall back to regular get
+        else:
+            # Show chapter list
+            free = [c for c in chapters if not c.is_vip]
+            click.echo(f"Total: {len(chapters)} chapters ({len(free)} free)")
+            # Fetch first free chapter as preview
+            if free:
+                ch = eng.fetch_chapter(free[0])
+                if ch and ch.content:
+                    click.echo(f"\n=== {ch.title} ===\n")
+                    click.echo(ch.content[:2000])
+                    click.echo(f"\n... ({len(ch.content)} chars total)")
+            return
+
     try:
         from apexcrawler.get import get
         content = get(url, engine=engine, proxy=proxy, timeout=timeout, output=output)
@@ -1539,7 +1564,7 @@ def save_cmd(ctx: click.Context, url: str, output: str, engine: str, fmt: str) -
 
 @cli.group()
 def qidian() -> None:
-    """起点中文网爬取工具（需登录）。"""
+    """起点中文网爬取工具（免费章节无需登录）。"""
     pass
 
 
