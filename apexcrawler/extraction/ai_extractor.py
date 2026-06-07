@@ -319,7 +319,11 @@ HTML 内容:
                     }
                 )
                 data = resp.json()
-                content = data["choices"][0]["message"]["content"]
+                try:
+                    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                except (IndexError, KeyError, TypeError) as e:
+                    logger.warning(f"Unexpected API response structure: {e}")
+                    content = ""
 
                 import json as _json
                 extracted = _json.loads(content)

@@ -92,7 +92,7 @@ class CrossValidator:
 
     def _from_jsonld(self, html: str, field: str) -> str | None:
         for m in re.finditer(
-            r'script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
+            r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
             html,
             re.DOTALL,
         ):

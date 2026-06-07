@@ -70,7 +70,7 @@ class BiqugeAdapter(SiteAdapter):
     ]
 
     URL_PATTERNS = [
-        r"(?:www\.)?(?:{d})\.[a-z]+/book/(\d+)",
+        r"^https?://(?:www\.)?(?:{d})\.[a-z]+/book/(\d+)",
     ]
 
     @classmethod

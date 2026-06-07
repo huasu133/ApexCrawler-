@@ -4,12 +4,46 @@ Uses robots.txt + sitemap.xml as primary source, with optional BFS crawl fallbac
 """
 from __future__ import annotations
 import gzip
+import ipaddress
 import logging
 import re
 from typing import List, Optional, Set
 from urllib.parse import urlparse, urljoin
 
 logger = logging.getLogger(__name__)
+
+_BLOCKED_NETWORKS = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fe80::/10"),
+]
+
+
+def _validate_url(url: str) -> None:
+    """Validate URL to prevent SSRF attacks. Raises ValueError if blocked."""
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        raise ValueError(f"Invalid URL: {url}")
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Blocked scheme: {parsed.scheme}")
+    host = parsed.hostname or ""
+    if host in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
+        raise ValueError(f"Blocked host: {host}")
+    try:
+        addr = ipaddress.ip_address(host)
+        for net in _BLOCKED_NETWORKS:
+            if addr in net:
+                raise ValueError(f"Blocked IP: {host} (in {net})")
+    except ValueError:
+        if host:
+            raise
+    except Exception:
+        pass
 
 
 async def fetch_url(url: str, timeout: int = 10) -> Optional[str]:
@@ -54,6 +88,7 @@ async def parse_robots_txt(domain: str) -> List[str]:
 
 async def parse_sitemap(url: str) -> List[str]:
     """Download and parse a sitemap.xml (or sitemap index), return list of URLs."""
+    _validate_url(url)  # SSRF 防护
     content = await fetch_url(url)
     if not content:
         return []
@@ -158,7 +193,21 @@ async def map_site(domain: str, depth: int = 0) -> dict:
     if domain.startswith("http"):
         parsed = urlparse(domain)
         domain = parsed.netloc
-    
+
+    # SSRF 防护：验证域名不是内部 IP 或 localhost
+    if domain in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
+        raise ValueError(f"Blocked domain: {domain}")
+    try:
+        addr = ipaddress.ip_address(domain)
+        for net in _BLOCKED_NETWORKS:
+            if addr in net:
+                raise ValueError(f"Blocked IP: {domain}")
+    except ValueError:
+        # 不是 IP 地址（域名），OK
+        pass
+    except Exception:
+        pass
+
     all_urls: List[str] = []
     
     # Step 1: Parse robots.txt for sitemaps

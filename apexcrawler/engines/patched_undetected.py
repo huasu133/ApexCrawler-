@@ -2,6 +2,8 @@
 PatchedEngine undetected-chromedriver backend.
 Provides Playwright-like interface mapping for uc.Chrome.
 """
+import asyncio
+import functools
 import logging
 from typing import Any
 
@@ -52,7 +54,6 @@ class _UndetectedPage:
     @property
     def content(self):
         """Returns a coroutine that resolves to page HTML (property-style access)."""
-        import asyncio
         fut = asyncio.get_event_loop().run_in_executor(
             None, lambda: self._driver.page_source
         )
@@ -61,8 +62,13 @@ class _UndetectedPage:
     async def evaluate(self, script: str):
         return self._driver.execute_script(script)
 
-    async def close(self):
-        pass
+    async def close(self) -> None:
+        if self._driver:
+            try:
+                self._driver.quit()
+            except Exception as e:
+                logger.debug(f"Undetected driver quit error: {e}")
+            self._driver = None
 
 
 async def create_undetected_browser(
@@ -90,7 +96,11 @@ async def create_undetected_browser(
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
 
-    driver = uc.Chrome(options=options, headless=headless, use_subprocess=True)
+    loop = asyncio.get_running_loop()
+    driver = await loop.run_in_executor(
+        None,
+        functools.partial(uc.Chrome, options=options, headless=headless, use_subprocess=True),
+    )
     context = _UndetectedContext(driver)
     page = _UndetectedPage(driver)
 

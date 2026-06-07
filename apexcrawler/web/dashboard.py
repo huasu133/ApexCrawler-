@@ -25,7 +25,12 @@ _API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 _EXPECTED_API_KEY = os.environ.get("APEX_API_KEY", "")
 
 async def _require_api_key(api_key: str = Depends(_API_KEY_HEADER)):
-    if _EXPECTED_API_KEY and api_key != _EXPECTED_API_KEY:
+    if not _EXPECTED_API_KEY:
+        raise HTTPException(
+            503,
+            "API key not configured. Set APEX_API_KEY environment variable.",
+        )
+    if api_key != _EXPECTED_API_KEY:
         raise HTTPException(403, "Invalid API key")
 
 # ── Models ──
@@ -133,26 +138,35 @@ def create_app() -> FastAPI:
     @app.get("/api/events")
     async def sse_events(_=Depends(_require_api_key)):
         async def event_generator():
-            while True:
-                raw = await tm.get_metrics()
-                payload = {
-                    "total": raw.get("total", 0),
-                    "pending": raw.get("pending", 0),
-                    "running": raw.get("running", 0),
-                    "paused": raw.get("paused", 0),
-                    "completed": raw.get("completed", 0),
-                    "failed": raw.get("failed", 0),
-                    "cancelled": raw.get("cancelled", 0),
-                }
-                yield {"event": "metrics", "data": json.dumps(payload)}
-                await asyncio.sleep(3)
+            try:
+                while True:
+                    raw = await tm.get_metrics()
+                    payload = {
+                        "total": raw.get("total", 0),
+                        "pending": raw.get("pending", 0),
+                        "running": raw.get("running", 0),
+                        "paused": raw.get("paused", 0),
+                        "completed": raw.get("completed", 0),
+                        "failed": raw.get("failed", 0),
+                        "cancelled": raw.get("cancelled", 0),
+                    }
+                    yield {"event": "metrics", "data": json.dumps(payload)}
+                    await asyncio.sleep(3)
+            except asyncio.CancelledError:
+                logger.debug("SSE client disconnected, cleaning up")
+                raise
+            except Exception as e:
+                logger.warning(f"SSE generator error: {e}")
         return EventSourceResponse(event_generator())
 
     # ── Frontend HTML ──
 
     @app.get("/", response_class=HTMLResponse)
     async def index():
-        return DASHBOARD_HTML
+        return DASHBOARD_HTML.replace(
+            '<meta name="api-key" content="">',
+            f'<meta name="api-key" content="{_EXPECTED_API_KEY}">',
+        )
 
     return app
 
@@ -162,6 +176,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="api-key" content="">
 <title>ApexCrawler Dashboard</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -266,11 +281,20 @@ tr:last-child td{border-bottom:none}
 let tasks = [];
 let selectedTaskId = null;
 
+const API_KEY = document.querySelector('meta[name="api-key"]').getAttribute('content');
+
+async function apiFetch(url, options = {}) {
+    const headers = options.headers || {};
+    if (API_KEY) headers['X-API-Key'] = API_KEY;
+    const r = await fetch(url, { ...options, headers });
+    if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+    return r.json();
+}
+
 // ── Fetch tasks ──
 async function fetchTasks() {
   try {
-    const r = await fetch('/api/tasks?limit=50');
-    tasks = await r.json();
+    tasks = await apiFetch('/api/tasks?limit=50');
     renderTable();
   } catch(e) { console.error('fetch tasks error:', e); }
 }
@@ -278,8 +302,7 @@ async function fetchTasks() {
 // ── Fetch metrics ──
 async function fetchMetrics() {
   try {
-    const r = await fetch('/api/metrics');
-    const m = await r.json();
+    const m = await apiFetch('/api/metrics');
     document.getElementById('m-total').textContent = m.total || 0;
     document.getElementById('m-running').textContent = m.running || 0;
     document.getElementById('m-completed').textContent = m.completed || 0;
@@ -318,7 +341,7 @@ function renderTable() {
 // ── Actions ──
 async function doAction(taskId, action) {
   try {
-    await fetch('/api/tasks/' + taskId + '/' + action, {method:'POST'});
+    await apiFetch('/api/tasks/' + taskId + '/' + action, {method:'POST'});
     await fetchTasks();
     await fetchMetrics();
   } catch(e) { alert('操作失败: ' + e.message); }
@@ -330,12 +353,11 @@ async function createTask() {
   if (!url) return alert('请输入 URL');
   const engine = document.getElementById('new-engine').value;
   try {
-    const r = await fetch('/api/tasks', {
+    await apiFetch('/api/tasks', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({url, engine})
     });
-    if (!r.ok) { const d = await r.json(); throw new Error(d.detail || '创建失败'); }
     document.getElementById('new-url').value = '';
     await fetchTasks();
     await fetchMetrics();
@@ -348,8 +370,7 @@ async function showDetail(taskId) {
   const content = document.getElementById('detail-content');
   document.getElementById('detail-id').textContent = '#' + taskId.slice(0,8);
   try {
-    const r = await fetch('/api/tasks/' + taskId);
-    const t = await r.json();
+    const t = await apiFetch('/api/tasks/' + taskId);
     let html = '<div class="row"><span class="label">URL</span><span class="val">' + t.url + '</span></div>';
     html += '<div class="row"><span class="label">状态</span><span class="val">' + t.status + '</span></div>';
     html += '<div class="row"><span class="label">引擎</span><span class="val">' + (t.engine||'-') + '</span></div>';

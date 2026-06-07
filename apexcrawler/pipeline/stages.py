@@ -16,6 +16,7 @@ from pathlib import Path
 
 from ..core.context import PipelineContext
 from ..core.exceptions import ConfigurationError, ExtractionError
+from ..decision.engine import DecisionEngine
 from ..http.tls_router import TLSRouter
 
 logger = logging.getLogger(__name__)

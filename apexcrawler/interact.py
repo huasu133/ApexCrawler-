@@ -1,12 +1,47 @@
 """Page interaction executor — runs JSON action sequences on pages."""
 from __future__ import annotations
 import asyncio
+import ipaddress
 import json
 import logging
 import os
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+_BLOCKED_NETWORKS = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fe80::/10"),
+]
+
+
+def _validate_url(url: str) -> None:
+    """Validate URL to prevent SSRF attacks. Raises ValueError if blocked."""
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        raise ValueError(f"Invalid URL: {url}")
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Blocked scheme: {parsed.scheme}")
+    host = parsed.hostname or ""
+    if host in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
+        raise ValueError(f"Blocked host: {host}")
+    try:
+        addr = ipaddress.ip_address(host)
+        for net in _BLOCKED_NETWORKS:
+            if addr in net:
+                raise ValueError(f"Blocked IP: {host} (in {net})")
+    except ValueError:
+        if host:
+            raise
+    except Exception:
+        pass
 
 
 class InteractError(Exception):
@@ -52,6 +87,7 @@ async def _execute_single(page, action: Dict[str, Any]):
     if action_type == "navigate":
         url = action.get("url", "")
         if url:
+            _validate_url(url)
             await page.goto(url)
             return {"url": url}
 

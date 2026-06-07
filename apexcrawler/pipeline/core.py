@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 from ..core.exceptions import NonRetryableError, RetryableError
 from ..core.context import PipelineContext
-from .checkpoint import CheckpointManager, _context_to_dict
+from .checkpoint import CheckpointManager, _context_to_dict, _dict_to_context
 from .hooks import PipelineHooks
 from .rate_controller import DomainRateController
 

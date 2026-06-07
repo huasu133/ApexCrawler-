@@ -75,6 +75,8 @@ class VanillaEngine(BaseEngine):
         """
         if not self._running:
             raise EngineError("vanilla", "Engine not launched — call launch() first")
+        if self._browser is None:
+            raise RuntimeError("Engine not launched. Call launch() first.")
 
         if proxy:
             if self._context:

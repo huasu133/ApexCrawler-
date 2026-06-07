@@ -29,6 +29,9 @@ def get(url: str, engine: str = "", proxy: str = "", timeout: int = 30,
         text = get("https://example.com", output="text")
         html = get("https://example.com", engine="cloaked_v2")
     """
+    if engine:
+        logger.warning("engine parameter is not yet supported (using default HTTP fetcher)")
+
     try:
         from apexcrawler.http.fetcher import FastFetcher
         fetcher = FastFetcher(impersonate="chrome131", proxy=proxy if proxy else None, timeout=timeout)

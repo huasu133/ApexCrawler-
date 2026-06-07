@@ -44,6 +44,12 @@ class NovelEngine:
         if isinstance(url_or_chapter, str):
             adp = self._detect(url_or_chapter)
             return adp.fetch_chapter(Chapter(index=0, title="", url=url_or_chapter))
+        elif isinstance(url_or_chapter, Chapter):
+            url = url_or_chapter.url or ""
+            if url:
+                adp = self._detect(url)
+                return adp.fetch_chapter(url_or_chapter)
+            return ""
         return ""
 
     def download(self, url: str, start: int = 1, end: int = 0, output: str = "txt") -> str:

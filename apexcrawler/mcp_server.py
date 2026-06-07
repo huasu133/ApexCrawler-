@@ -10,15 +10,55 @@ ApexCrawler MCP Server — 让 AI 工具直接调用爬取能力。
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import os
 import hashlib
+import socket
 from typing import Optional
+from urllib.parse import urlparse
 
 from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
+
+# ══════════════════════════════════════════════════════════════════════
+# SSRF Protection
+# ══════════════════════════════════════════════════════════════════════
+
+_BLOCKED_NETWORKS = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fe80::/10"),
+]
+
+
+def _validate_url(url: str) -> None:
+    """Validate URL to prevent SSRF attacks. Raises ValueError if blocked."""
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        raise ValueError(f"Invalid URL: {url}")
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Blocked scheme: {parsed.scheme}")
+    host = parsed.hostname or ""
+    if host in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
+        raise ValueError(f"Blocked host: {host}")
+    try:
+        addr = ipaddress.ip_address(host)
+        for net in _BLOCKED_NETWORKS:
+            if addr in net:
+                raise ValueError(f"Blocked IP: {host} (in {net})")
+    except ValueError:
+        if host:  # Re-raise our own ValueError only if host is non-empty
+            raise
+    except Exception:
+        pass
 
 # ══════════════════════════════════════════════════════════════════════
 # MCP Server
@@ -58,6 +98,7 @@ async def crawl(
                 不指定则由管线自动选择。
     """
     try:
+        _validate_url(url)
         if fast:
             return await _fast_crawl(url, engine)
         return await _pipeline_crawl(url, engine)
@@ -68,6 +109,25 @@ async def crawl(
 
 async def _fast_crawl(url: str, engine: Optional[str] = None) -> str:
     """快速抓取：使用 FastFetcher 直接请求，适合静态页面。"""
+    _validate_url(url)  # 首次检查
+
+    # DNS 重绑定防护：在请求前解析 IP 并再次验证
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    try:
+        addrs = socket.getaddrinfo(host, 80)
+        resolved_ips = set()
+        for addr in addrs:
+            ip = addr[4][0]
+            if ip not in resolved_ips:
+                resolved_ips.add(ip)
+                if ipaddress.ip_address(ip).version == 6:
+                    _validate_url(f"http://[{ip}]/")
+                else:
+                    _validate_url(f"http://{ip}/")
+    except Exception:
+        pass  # 如果 DNS 解析失败，依赖首次验证
+
     from apexcrawler.http.fetcher import FastFetcher
 
     fetcher = FastFetcher(impersonate="chrome131")
@@ -125,7 +185,15 @@ async def _pipeline_crawl(url: str, engine: Optional[str] = None) -> str:
         "store": StageConfig(timeout=10.0),
     }
 
-    executor = PipelineExecutor(stages=stages, configs=configs)
+    executor = PipelineExecutor(
+        stages=stages,
+        configs=configs,
+        settings=None,
+        session_manager=None,
+        rate_controller=None,
+        degrade_manager=None,
+        plugin_manager=None,
+    )
     ctx = PipelineContext(target_url=url)
 
     if engine:
@@ -180,6 +248,7 @@ async def extract(
         format: 输出格式，可选 "txt"（纯文本）、"html"（原始 HTML）、"json"（结构化 JSON）。
     """
     try:
+        _validate_url(url)
         from apexcrawler.http.fetcher import FastFetcher
 
         fetcher = FastFetcher(impersonate="chrome131")
@@ -383,6 +452,7 @@ async def qidian_crawl(book_id: str, chapters: int = 5) -> str:
 async def crawl_site(url: str, max_pages: int = 10, same_domain: bool = True) -> str:
     """爬取站点内多个页面。"""
     try:
+        _validate_url(url)
         from apexcrawler.http.fetcher import FastFetcher
         from urllib.parse import urlparse, urljoin
         from bs4 import BeautifulSoup
@@ -503,6 +573,7 @@ async def export_crawl(data: str, format: str = "json") -> str:
 async def screenshot_url(url: str, full_page: bool = False) -> str:
     """截取页面截图。"""
     try:
+        _validate_url(url)
         from playwright.async_api import async_playwright
         import base64
 
@@ -540,6 +611,7 @@ async def screenshot_url(url: str, full_page: bool = False) -> str:
 async def validate_selector(url: str, selector: str, selector_type: str = "css") -> str:
     """验证选择器是否有效。"""
     try:
+        _validate_url(url)
         from apexcrawler.http.fetcher import FastFetcher
         from bs4 import BeautifulSoup
 
@@ -698,6 +770,7 @@ async def batch_crawl(urls: str, engine: Optional[str] = None, fast: bool = Fals
             results = []
             for target_url in url_list:
                 try:
+                    _validate_url(target_url)
                     result = fetcher.get(target_url)
                     results.append(
                         {
@@ -735,6 +808,7 @@ async def batch_crawl(urls: str, engine: Optional[str] = None, fast: bool = Fals
 async def train_selector(url: str, field_name: str, selector: str) -> str:
     """教导选择器。"""
     try:
+        _validate_url(url)
         from apexcrawler.http.fetcher import FastFetcher
         from bs4 import BeautifulSoup
 
@@ -860,6 +934,7 @@ async def selector_history(field_name: str) -> str:
 )
 async def page_info(url: str) -> str:
     try:
+        _validate_url(url)
         from apexcrawler.http.fetcher import FastFetcher
         from bs4 import BeautifulSoup
         from urllib.parse import urlparse
@@ -902,6 +977,7 @@ async def page_info(url: str) -> str:
 )
 async def create_crawl_task(url: str, engine: str = "") -> str:
     try:
+        _validate_url(url)
         from apexcrawler.task_manager import TaskManager
 
         tm = TaskManager()
@@ -966,6 +1042,7 @@ async def novel_info(url: str) -> str:
     import json, logging
     logging.getLogger("apexcrawler").setLevel(logging.WARNING)
     try:
+        _validate_url(url)
         from apexcrawler.novel.engine import NovelEngine
         ne = NovelEngine()
         book = ne.info(url)
@@ -991,6 +1068,7 @@ async def novel_download(url: str, chapters: str = "") -> str:
     import json, logging
     logging.getLogger("apexcrawler").setLevel(logging.WARNING)
     try:
+        _validate_url(url)
         from apexcrawler.novel.engine import NovelEngine
         start, end = 1, 0
         if chapters:

@@ -7,6 +7,7 @@ This module provides two layers of selector healing:
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -493,7 +494,7 @@ class SelHealer:
             ``(new_selector, confidence)`` where confidence is 0.0–1.0.
         """
         # -- Phase 1: try the original selector ----------------------------
-        html = page.content()
+        html = asyncio.run(page.content())
 
         try:
             tree = lhtml.fromstring(html)
@@ -570,7 +571,7 @@ class SelHealer:
             (selector, confidence) tuple
         """
         # Phase 1: Try original selector
-        html = page.content()
+        html = asyncio.run(page.content())
         try:
             tree = lhtml.fromstring(html)
             if selector.startswith("//"):

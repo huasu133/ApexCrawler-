@@ -10,7 +10,7 @@ services:
       - apexcrawler_data:/root/.apexcrawler
     environment:
       - APEX_LOG_LEVEL=INFO
-      # 安全: 设置 API Key 保护 Dashboard (APEX_API_KEY=your-secret-key)
+      - APEX_API_KEY=dev-apex-key-change-in-production
     shm_size: 2gb
     restart: unless-stopped
 

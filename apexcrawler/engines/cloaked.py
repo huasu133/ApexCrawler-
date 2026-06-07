@@ -88,11 +88,19 @@ class CloakedEngine(BaseEngine):
         self._page = await self._context.new_page()
 
         # Inject WASM interceptor for SIMD neutralization
-        from ..anti_font.wasm_interceptor import WASMInterceptor
-        self._wasm_interceptor = WASMInterceptor()
-        await self._wasm_interceptor.inject(self._page)
+        try:
+            from apexcrawler.anti_font.wasm_interceptor import WASMInterceptor
+        except ImportError as e:
+            logger.warning(f"WASMInterceptor import failed: {e}")
+            WASMInterceptor = None
 
-        logger.info("CloakedEngine launched successfully (WASM interceptor active)")
+        if WASMInterceptor is not None:
+            self._wasm_interceptor = WASMInterceptor()
+            await self._wasm_interceptor.inject(self._page)
+            logger.info("CloakedEngine launched successfully (WASM interceptor active)")
+        else:
+            self._wasm_interceptor = None
+            logger.info("CloakedEngine launched successfully (WASM interceptor unavailable)")
 
     async def navigate(self, url: str, proxy: str | None = None):
         if not self._page:
@@ -107,7 +115,8 @@ class CloakedEngine(BaseEngine):
                 **context_opts, viewport=self._viewport
             )
             self._page = await self._context.new_page()
-            await self._wasm_interceptor.inject(self._page)
+            if self._wasm_interceptor is not None:
+                await self._wasm_interceptor.inject(self._page)
         await self._page.goto(url, wait_until="networkidle", timeout=30000)
         try:
             await ensure_subresource_load(self._page)
