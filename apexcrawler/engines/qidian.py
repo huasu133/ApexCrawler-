@@ -273,6 +273,7 @@ class QidianEngine(BaseEngine):
         # CookieJarStore for persistent cookie storage
         self._cookie_store = CookieJarStore()
         self._page_html = ""  # WAF 绕过时顺便获取的书籍页面 HTML
+        self._chapters_data = []  # WAF 绕过时提取的章节数据
 
         # 运行时状态
         self._curl_session: Optional[CurlSession] = None
@@ -439,15 +440,16 @@ class QidianEngine(BaseEngine):
     def _bypass_waf_and_fetch_cookies(self, book_id: int | None = None) -> dict[str, str]:
         """
         使用 CloakBrowser (Chrome) 打开起点首页，等待 WAF 挑战通过，
-        提取 Cookie 并持久化保存。如果指定 book_id，顺便爬取书籍页面 HTML。
+        提取 Cookie 并持久化保存。如果指定 book_id，顺便爬取书籍章节数据。
 
         Returns:
             dict[str, str]: Cookie name→value 字典
         """
-        cookies_list, page_html = asyncio.run(
+        cookies_list, page_html, chapters_data = asyncio.run(
             self._bypass_waf_and_fetch_cookies_async(book_id=book_id)
         )
-        self._page_html = page_html  # 供 fetch_catalog 使用
+        self._page_html = page_html
+        self._chapters_data = chapters_data  # 供 fetch_catalog 使用
         curl_cookies = self._cookie_store.to_curl_format(cookies_list)
         self._cookie_store.save(cookies_list)
         logger.info("WAF 绕过完成，已持久化 %d 个 Cookie", len(cookies_list))
@@ -455,12 +457,13 @@ class QidianEngine(BaseEngine):
 
     async def _bypass_waf_and_fetch_cookies_async(
         self, book_id: int | None = None
-    ) -> tuple[list[dict], str]:
+    ) -> tuple[list[dict], str, list[dict]]:
         """
         使用 CloakBrowser (Chrome) 打开起点，等待 WAF 通过并提取 Cookie。
 
-        如果传了 book_id，还会顺便导航到书籍页面提取章节列表 HTML。
-        返回 (cookies, page_html) 元组。
+        如果传了 book_id，还会顺便导航到书籍页面提取章节列表。
+        返回 (cookies, page_html, chapters_data) 元组。
+        chapters_data 是 [{title, href, is_vip}] 列表。
 
         腾讯云 WAF 的 probe.js 必须运行在非 headless 的 Chrome 环境中。
         """
@@ -481,20 +484,31 @@ class QidianEngine(BaseEngine):
             cookies = await context.cookies()
             logger.info("CloakBrowser WAF 绕过完成，获取到 %d 个 Cookie", len(cookies))
 
-            # 如果指定了 book_id，顺便爬书籍页面提取章节列表
             page_html = ""
+            chapters_data = []
             if book_id:
                 try:
                     book_url = f"https://book.qidian.com/info/{book_id}"
                     await page.goto(book_url, wait_until="domcontentloaded", timeout=30_000)
                     await page.wait_for_load_state("networkidle", timeout=30_000)
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(5)  # 等待 JS 渲染目录
+
                     page_html = await page.content()
-                    logger.info("书籍页面加载完成 (%d bytes)", len(page_html))
+
+                    # 通过 evaluate 提取渲染后的章节列表
+                    chapters_data = await page.evaluate(f"""() => {{
+                        const links = document.querySelectorAll('[class*="chapter"] a[href*="/chapter/{book_id}/"]');
+                        return Array.from(links).map(a => ({{
+                            title: a.textContent.trim(),
+                            href: a.getAttribute('href') || '',
+                            is_vip: a.closest('li')?.querySelector('.vip, .icon-vip, [class*="vip"]') !== null
+                        }}));
+                    }}""")
+                    logger.info("书籍页面加载完成，提取到 %d 章", len(chapters_data))
                 except Exception as e:
                     logger.warning("书籍页面加载失败: %s", e)
 
-            return cookies, page_html
+            return cookies, page_html, chapters_data
         finally:
             await browser.close()
 
@@ -579,16 +593,26 @@ class QidianEngine(BaseEngine):
             except Exception as e:
                 logger.warning("WAF 绕过失败: %s，将使用无 Cookie 请求", e)
 
-        # 如果 WAF 绕过时已经拿到了页面 HTML，直接从 HTML 提取
-        if hasattr(self, '_page_html') and self._page_html:
-            logger.info("使用 WAF 绕过时获取的页面 HTML 提取目录")
-            chapters = self._extract_catalog_from_html(self._page_html, book_id)
-            self._page_html = ""  # 用完后清空
+        # 如果 WAF 绕过时已经拿到了章节数据，直接使用
+        if hasattr(self, '_chapters_data') and self._chapters_data:
+            logger.info("使用 WAF 绕过时提取的章节数据 (%d 章)", len(self._chapters_data))
+            for i, ch_data in enumerate(self._chapters_data, 1):
+                ch_id_match = re.search(r'/(\d+)/?$', ch_data.get("href", ""))
+                ch_id = int(ch_id_match.group(1)) if ch_id_match else 0
+                chapters.append(Chapter(
+                    chapter_id=ch_id,
+                    book_id=book_id,
+                    title=ch_data.get("title", ""),
+                    index=i,
+                    is_vip=ch_data.get("is_vip", False),
+                    url=f"https:{ch_data['href']}" if ch_data.get("href", "").startswith("//") else ch_data.get("href", ""),
+                ))
+            self._chapters_data = []  # 用完后清空
             if chapters:
                 self._catalog_cache[book_id] = CatalogCache(
                     book_id=book_id, chapters=chapters
                 )
-                logger.info("HTML 提取完成: book_id=%d, 共 %d 章", book_id, len(chapters))
+                logger.info("章节提取完成: book_id=%d, 共 %d 章", book_id, len(chapters))
                 return chapters
 
         session = self._get_curl_session(cookies=curl_cookies)
