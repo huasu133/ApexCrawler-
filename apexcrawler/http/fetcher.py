@@ -25,7 +25,7 @@ class FastFetcher:
 
         fetcher = FastFetcher(impersonate="chrome131")
         result = fetcher.get("https://example.com")
-        print(result["status_code"], result["text"][:200])
+        logger.debug("status=%s text=%s...", result["status_code"], result["text"][:200])
         fetcher.close()
     """
 

@@ -60,7 +60,7 @@ class GeoResolver:
     Usage:
         resolver = GeoResolver(backend="ip-api")
         info = await resolver.lookup("8.8.8.8")
-        print(f"{info.ip} → {info.country_code} ({info.country_name})")
+        logger.info("%s → %s (%s)", info.ip, info.country_code, info.country_name)
     """
 
     def __init__(

@@ -44,6 +44,11 @@ mcp = ["mcp>=1.0"]
 [project.scripts]
 apex = "apexcrawler.cli.main:main"
 
+[project.urls]
+Homepage = "https://github.com/huasu133/ApexCrawler-"
+Repository = "https://github.com/huasu133/ApexCrawler-"
+Issues = "https://github.com/huasu133/ApexCrawler-/issues"
+
 [project.entry-points."apexcrawler.engines"]
 vanilla = "apexcrawler.engines.vanilla:VanillaEngine"
 patched = "apexcrawler.engines.patched:PatchedEngine"

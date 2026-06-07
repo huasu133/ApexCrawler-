@@ -80,7 +80,7 @@ class ProxyPool(ProxyProvider):
         self,
         strategy: RotationStrategy = RotationStrategy.ROUND_ROBIN,
         health_check_interval: float = 60.0,
-        cooldown_seconds: float = 3600.0,
+        cooldown_seconds: float = 300.0,
         max_concurrent_per_proxy: int = 5,
         min_pool_size: int = 1,
     ):

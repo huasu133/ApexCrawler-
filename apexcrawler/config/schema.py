@@ -27,7 +27,7 @@ class EngineConfig(BaseModel):
 class ProxyPoolConfig(BaseModel):
     """Configuration for the proxy pool subsystem."""
 
-    providers: list[str] = Field(default_factory=list)
+    providers: list[str] = Field(default_factory=list, deprecated="Not implemented — use proxy sources plugin instead")
     min_pool_size: int = 5
     health_check_interval: int = 60
     cooldown_seconds: int = 300

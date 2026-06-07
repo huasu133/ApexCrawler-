@@ -44,7 +44,7 @@ class OCREngine:
         engine = OCREngine(backend="ddddocr")
         result = await engine.recognize(image_bytes)
         if result.confidence > 0.7:
-            print(result.text)
+            logger.debug(result.text)
     """
 
     # Common English words for coherence scoring

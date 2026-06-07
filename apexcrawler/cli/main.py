@@ -78,12 +78,16 @@ def _validate_url(url: str) -> str:
 
 
 @click.group()
-@click.option("--log-level", type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=True), default="INFO", help="Log level (DEBUG, INFO, WARNING, ERROR)")
-@click.option("--json-log", is_flag=True, default=False, help="Output logs as JSON")
+@click.option("--log-level", type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=True), default="INFO", help="日志级别（DEBUG, INFO, WARNING, ERROR）")
+@click.option("--json-log", is_flag=True, default=False, help="以 JSON 格式输出日志")
 @click.pass_context
 def cli(ctx: click.Context, log_level: str, json_log: bool) -> None:
-    """ApexCrawler — Adaptive web scraping framework with anti-crawl evasion."""
+    """ApexCrawler — 自适应网页爬虫框架，专为反爬对抗场景设计。"""
     from ..utils.logger import configure_logging
+    # Suppress logging noise during --help output
+    if any(arg in sys.argv for arg in ("--help", "-h")):
+        log_level = "ERROR"
+        json_log = False
     configure_logging(level=log_level, json_format=json_log)
     ctx.ensure_object(dict)
     ctx.obj["log_level"] = log_level
@@ -93,17 +97,17 @@ def cli(ctx: click.Context, log_level: str, json_log: bool) -> None:
 
 @cli.command()
 @click.argument("url", required=False)
-@click.option("--batch", "-b", "batch_file", type=click.Path(exists=True), help="File with URLs (one per line)")
-@click.option("--output", "-o", "output_file", type=click.Path(), help="Output file for results (JSON)")
-@click.option("--schema", "-s", "schema_name", default="generic", help="Extraction schema (product, article, etc.)")
-@click.option("--engine", "-e", "engine_name", default="", help="Force a specific browser engine")
-@click.option("--proxy", "-p", "proxy_url", default="", help="Force a specific proxy")
-@click.option("--geo", "-g", "geo_code", default="", help="Force proxy geo location")
-@click.option("--timeout", "-t", type=click.IntRange(min=1), default=30, help="Request timeout in seconds")
-@click.option("--retries", "-r", type=click.IntRange(min=1), default=3, help="Max retry attempts")
-@click.option("--fast", is_flag=True, default=False, help="Skip human-like timing delays (faster but more detectable)")
-@click.option("--resume", is_flag=True, default=False, help="Resume last interrupted crawl from checkpoint")
-@click.option("--checkpoint-dir", type=click.Path(), default=None, help="Checkpoint storage directory")
+@click.option("--batch", "-b", "batch_file", type=click.Path(exists=True), help="包含 URL 的文件（每行一个）")
+@click.option("--output", "-o", "output_file", type=click.Path(), help="结果输出文件（JSON 格式）")
+@click.option("--schema", "-s", "schema_name", default="generic", help="提取模式（product, article 等）")
+@click.option("--engine", "-e", "engine_name", default="", help="强制指定浏览器引擎")
+@click.option("--proxy", "-p", "proxy_url", default="", help="强制指定代理")
+@click.option("--geo", "-g", "geo_code", default="", help="强制指定代理地理位置")
+@click.option("--timeout", "-t", type=click.IntRange(min=1), default=30, help="请求超时时间（秒）")
+@click.option("--retries", "-r", type=click.IntRange(min=1), default=3, help="最大重试次数")
+@click.option("--fast", is_flag=True, default=False, help="跳过人类行为模拟延迟（更快但更容易被检测）")
+@click.option("--resume", is_flag=True, default=False, help="从上次中断的检查点恢复爬取")
+@click.option("--checkpoint-dir", type=click.Path(), default=None, help="检查点存储目录")
 @click.pass_context
 def crawl(
     ctx: click.Context,
@@ -120,14 +124,16 @@ def crawl(
     resume: bool,
     checkpoint_dir: Optional[str],
 ) -> None:
-    """Crawl a single URL or batch of URLs.
+    """爬取单个 URL 或批量 URL。
+
+    支持完整 6 阶段管线：调度 → 路由 → 隐身 → 提取 → 验证 → 存储。
 
     \b
-    Examples:
+    示例:
         apex crawl https://example.com
         apex crawl --batch urls.txt -o results.json
         apex crawl https://shop.com/product/1 -s product -e cloaked
-        apex crawl --resume  # Resume from last checkpoint
+        apex crawl --resume  # 从上次检查点恢复
         apex crawl https://example.com --checkpoint-dir /tmp/apex_cps
     """
     if not url and not batch_file and not resume:
@@ -350,12 +356,13 @@ def crawl(
 @click.argument("url")
 @click.pass_context
 def visual(ctx: click.Context, url: str) -> None:
-    """Launch visual point-and-click selector for a URL.
+    """启动可视化点选选择器，通过点击页面元素定义提取字段。
 
-    Opens browser with injected sidebar. Click page elements
-    to define extraction fields, then export as template.
+    打开浏览器并注入侧边栏。点击页面元素即可定义提取字段，
+    完成后可导出为提取模板。
 
-    Example:
+    \b
+    示例:
         apex visual https://example.com/products
     """
     async def _run():
@@ -402,13 +409,13 @@ def visual(ctx: click.Context, url: str) -> None:
 
 @cli.group()
 def template() -> None:
-    """Manage extraction templates."""
+    """管理提取模板。"""
     pass
 
 
 @template.command("list")
 def template_list() -> None:
-    """List saved extraction templates."""
+    """列出已保存的提取模板。"""
     from ..visual.recorder import TemplateStore, ensure_builtin_templates
 
     ensure_builtin_templates()
@@ -439,9 +446,10 @@ def template_list() -> None:
 @click.option("--output", "-o", help="Output file (JSON)")
 @click.pass_context
 def template_use(ctx: click.Context, name: str, url: str, output: str | None) -> None:
-    """Crawl URL using a saved template.
+    """使用已保存的模板爬取 URL。
 
-    Example:
+    \b
+    示例:
         apex template use "Amazon Product" https://amazon.com/dp/B0EXAMPLE
     """
     from ..visual.recorder import TemplateStore, ensure_builtin_templates
@@ -486,7 +494,7 @@ def template_use(ctx: click.Context, name: str, url: str, output: str | None) ->
 @template.command("delete")
 @click.argument("name")
 def template_delete(name: str) -> None:
-    """Delete a saved template."""
+    """删除已保存的模板。"""
     from ..visual.recorder import TemplateStore
 
     store = TemplateStore()
@@ -500,16 +508,17 @@ def template_delete(name: str) -> None:
 
 @cli.command()
 @click.argument("query")
-@click.option("--output", "-o", help="Output file (CSV/JSON)")
-@click.option("--live/--no-live", default=True, help="Show live extraction progress")
+@click.option("--output", "-o", help="输出文件（CSV/JSON）")
+@click.option("--live/--no-live", default=True, help="显示实时提取进度")
 @click.pass_context
 def ask(ctx: click.Context, query: str, output: str | None, live: bool) -> None:
-    """Natural language web scraping. Just say what you want.
+    """自然语言爬取 — 只需描述你想提取什么。
 
-    Auto-detects: URL, fields, best engine, best proxy strategy.
-    Zero configuration needed.
+    自动检测：目标 URL、提取字段、最佳引擎和代理策略。
+    零配置即可使用。
 
-    Examples:
+    \b
+    示例:
         apex ask "提取 huaspeed.cc 的套餐价格和功能"
         apex ask "get iPhone 15 prices from amazon.com"
         apex ask "浙江大学的地址和电话"
@@ -863,11 +872,11 @@ async def _try_http_extract(url: str, hints: dict) -> dict | None:
 
 @cli.command()
 @click.argument("url")
-@click.option("--output", "-o", help="Output file path")
-@click.option("--selector", "-s", help="CSS selector to extract (e.g. 'h1', '.price', '#main')")
-@click.option("--attribute", "-a", help="Attribute to extract (default: inner text)")
+@click.option("--output", "-o", help="输出文件路径")
+@click.option("--selector", "-s", help="CSS 选择器（如 'h1'、'.price'、'#main'）")
+@click.option("--attribute", "-a", help="提取的属性（默认：文本内容）")
 @click.option("--format", "-f", type=click.Choice(["txt", "md", "json"]), default="txt")
-@click.option("--fast", is_flag=True, help="Skip human-like timing delays")
+@click.option("--fast", is_flag=True, help="跳过人类行为模拟延迟")
 def extract(
     url: str,
     output: Optional[str],
@@ -1023,19 +1032,19 @@ def extract(
 # ── dashboard command ──────────────────────────────────────
 
 @cli.command()
-@click.option("--port", "-p", default=8000, help="Web dashboard port")
-@click.option("--open/--no-open", default=True, help="Open browser automatically")
+@click.option("--port", "-p", default=8000, help="Web 面板端口")
+@click.option("--open/--no-open", default=True, help="自动打开浏览器")
 @click.pass_context
 def dashboard(ctx: click.Context, port: int, open: bool) -> None:
-    """Start web dashboard for non-technical users.
+    """启动 Web 面板 — 无需终端即可爬取。
 
-    Opens a browser-based interface where anyone can:
-    - Type what they want in plain language
-    - See live extraction results
-    - Manage templates visually
-    - No terminal needed
+    打开浏览器界面，任何人都可以：
+    - 用自然语言输入爬取需求
+    - 实时查看提取结果
+    - 可视化管理模板
 
-    Example:
+    \b
+    示例:
         apex dashboard
     """
     try:
@@ -1446,15 +1455,15 @@ def crawl(
 
 @cli.group()
 def config() -> None:
-    """Manage ApexCrawler configuration."""
+    """管理 ApexCrawler 配置。"""
     pass
 
 
 @config.command("show")
-@click.option("--full", is_flag=True, default=False, help="Show full configuration including secrets")
+@click.option("--full", is_flag=True, default=False, help="显示完整配置（包括密钥）")
 @click.pass_context
 def config_show(ctx: click.Context, full: bool) -> None:
-    """Display current configuration."""
+    """显示当前配置。"""
     try:
         settings = Settings()
         data = settings.model_dump()
@@ -1473,7 +1482,7 @@ def config_show(ctx: click.Context, full: bool) -> None:
 @config.command("validate")
 @click.pass_context
 def config_validate(ctx: click.Context) -> None:
-    """Validate configuration and check for common issues."""
+    """验证配置并检查常见问题。"""
     errors: list[str] = []
     warnings: list[str] = []
 
@@ -1552,7 +1561,7 @@ def shell() -> None:
 
 @cli.command()
 def version() -> None:
-    """Show ApexCrawler version."""
+    """显示 ApexCrawler 版本信息。"""
     from .. import __version__
     click.echo(f"ApexCrawler v{__version__}")
     click.echo("Python: " + sys.version.split()[0])
@@ -1563,14 +1572,14 @@ def version() -> None:
 
 @cli.group()
 def checkpoints() -> None:
-    """Manage pipeline checkpoints for resume."""
+    """管理断点续爬的检查点。"""
     pass
 
 
 @checkpoints.command("list")
-@click.option("--checkpoint-dir", type=click.Path(), default=None, help="Checkpoint storage directory")
+@click.option("--checkpoint-dir", type=click.Path(), default=None, help="检查点存储目录")
 def checkpoints_list(checkpoint_dir: str | None) -> None:
-    """List all available checkpoints."""
+    """列出所有可用的检查点。"""
     from ..pipeline.checkpoint import CheckpointManager
 
     mgr = CheckpointManager(storage_dir=checkpoint_dir or ".apex_checkpoints")
@@ -1589,11 +1598,11 @@ def checkpoints_list(checkpoint_dir: str | None) -> None:
 
 
 @checkpoints.command("clear")
-@click.option("--checkpoint-dir", type=click.Path(), default=None, help="Checkpoint storage directory")
-@click.option("--all", "clear_all", is_flag=True, default=False, help="Clear all checkpoints")
+@click.option("--checkpoint-dir", type=click.Path(), default=None, help="检查点存储目录")
+@click.option("--all", "clear_all", is_flag=True, default=False, help="清除所有检查点")
 @click.argument("job_id", required=False)
 def checkpoints_clear(checkpoint_dir: str | None, clear_all: bool, job_id: str | None) -> None:
-    """Clear checkpoint(s). Provide JOB_ID or use --all."""
+    """清除检查点。提供 JOB_ID 或使用 --all 清除全部。"""
     from ..pipeline.checkpoint import CheckpointManager
 
     mgr = CheckpointManager(storage_dir=checkpoint_dir or ".apex_checkpoints")

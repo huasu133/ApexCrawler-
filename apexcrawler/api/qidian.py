@@ -1,10 +1,14 @@
 """起点中文网 API 封装 — 章节列表获取与缓存。"""
 
 import json
+import logging
 import time
 import hashlib
 from typing import Optional
 from apexcrawler.http.stealth_client import StealthHTTPClient
+
+
+logger = logging.getLogger(__name__)
 
 
 class CatalogFetcher:
@@ -73,5 +77,5 @@ class CatalogFetcher:
                 if data.get("code") == 0:
                     return data.get("data", {})
         except Exception as e:
-            print(f"Catalog fetch error: {e}")
+            logger.error("Catalog fetch error: %s", e)
         return None
