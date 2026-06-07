@@ -9,6 +9,7 @@ from typing import Awaitable, Callable
 from ..core.exceptions import NonRetryableError, RetryableError
 from ..core.context import PipelineContext
 from .checkpoint import CheckpointManager, _context_to_dict
+from .hooks import PipelineHooks
 
 logger = logging.getLogger(__name__)
 @dataclass
@@ -30,7 +31,8 @@ class PipelineExecutor:
 
     def __init__(self, stages: list, configs: dict[str, StageConfig] | None = None,
                  settings=None, session_manager=None, rate_controller=None, degrade_manager=None,
-                 plugin_manager=None, checkpoint_dir: str | None = None):
+                 plugin_manager=None, checkpoint_dir: str | None = None,
+                 hooks: PipelineHooks | None = None):
         self._stages = stages
         self._configs = configs or {}
         self._session_mgr = session_manager
@@ -41,6 +43,7 @@ class PipelineExecutor:
         self._checkpoint_mgr = CheckpointManager(
             storage_dir=checkpoint_dir or ".apex_checkpoints"
         ) if checkpoint_dir else None
+        self._hooks = hooks
         # Merge stage_timeouts from Settings if provided
         if settings:
             pipeline_cfg = getattr(settings, 'pipeline', None)
@@ -68,6 +71,9 @@ class PipelineExecutor:
             domain = urlparse(ctx.target_url).netloc
             self._session_mgr.bind_engine(domain, ctx.selected_engine, ctx.proxy or "")
 
+        # Hook: on_start — pipeline execution begins
+        await self._safe_execute_hook("on_start", ctx)
+
         for stage in self._stages:
             # RateController: apply inter-stage pacing
             if self._rate_ctrl and stage.name in ("extract", "evade"):
@@ -83,6 +89,11 @@ class PipelineExecutor:
                     logger.warning(
                         f"[degrade] engine degraded {old_engine} → {ctx.selected_engine}"
                     )
+
+            # Hook: on_stage_start — before each stage executes
+            await self._safe_execute_hook("on_stage_start", ctx, stage.name)
+            # Hook: on_before_goto — before navigation (contextual, fires if stage is navigation-related)
+            await self._safe_execute_hook("on_before_goto", ctx, ctx.target_url)
 
             cfg = self._configs.get(stage.name, StageConfig())
             try:
@@ -111,23 +122,47 @@ class PipelineExecutor:
                     if hasattr(ctx, 'raw_html') and ctx.raw_html and len(ctx.raw_html) > 0:
                         self._rate_ctrl.signal_success()
 
+                # Hook: on_stage_end — stage completed successfully
+                await self._safe_execute_hook("on_stage_end", ctx, stage.name, True)
+                # Hook: on_after_goto — after page load (contextual)
+                await self._safe_execute_hook("on_after_goto", ctx, ctx)
+                # Hook: on_extract — after extraction completes
+                if stage.name == "extract":
+                    await self._safe_execute_hook("on_extract", ctx, ctx)
+
             except asyncio.CancelledError:
                 await self._rollback(executed, ctx)
                 raise
             except NonRetryableError as e:
                 if self._plugin_mgr:
                     await self._plugin_mgr.dispatch("on_error", ctx, e)
+                # Hook: on_error — non-retryable error
+                await self._safe_execute_hook("on_error", ctx, stage.name, e)
                 ctx.fatal_error = str(e)
                 await self._rollback(executed, ctx)
+                # Hook: on_before_return — before returning results on error
+                await self._safe_execute_hook("on_before_return", ctx)
+                # Hook: on_complete — pipeline finished with failure
+                await self._safe_execute_hook("on_complete", ctx, False)
                 return False, ctx
             except RetryableError as e:
                 if self._plugin_mgr:
                     await self._plugin_mgr.dispatch("on_error", ctx, e)
+                # Hook: on_error — retryable error
+                await self._safe_execute_hook("on_error", ctx, stage.name, e)
                 ctx.stage_errors.setdefault(stage.name, []).append(str(e))
                 if self._rate_ctrl and stage.name == "extract":
                     self._rate_ctrl.signal(status=429)
                 await self._rollback(executed, ctx)
+                # Hook: on_before_return — before returning results on error
+                await self._safe_execute_hook("on_before_return", ctx)
+                # Hook: on_complete — pipeline finished with failure
+                await self._safe_execute_hook("on_complete", ctx, False)
                 return False, ctx
+        # Hook: on_before_return — pipeline completed successfully
+        await self._safe_execute_hook("on_before_return", ctx)
+        # Hook: on_complete — pipeline finished with success
+        await self._safe_execute_hook("on_complete", ctx, True)
         return True, ctx
 
     async def resume(self, job_id: str, ctx: PipelineContext | None = None):
@@ -199,6 +234,7 @@ class PipelineExecutor:
             rate_controller=self._rate_ctrl,
             degrade_manager=self._degrade_mgr,
             plugin_manager=self._plugin_mgr,
+            hooks=self._hooks,
         )
         return await rescue_executor.run(restored_ctx)
 
@@ -239,3 +275,12 @@ class PipelineExecutor:
                 await asyncio.wait_for(stage.rollback(ctx), timeout=10.0)
             except Exception:
                 logger.error(f"Rollback failed for {stage.name}")
+
+    async def _safe_execute_hook(self, hook_type: str, *args, **kwargs):
+        """Execute a hook safely — hook failures never block the pipeline."""
+        if not self._hooks:
+            return
+        try:
+            await self._hooks.execute(hook_type, *args, **kwargs)
+        except Exception:
+            logger.warning(f"Hook '{hook_type}' failed, skipping.", exc_info=True)

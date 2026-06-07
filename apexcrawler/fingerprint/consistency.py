@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import random
+import re
 from dataclasses import dataclass, field
 
 
@@ -50,6 +51,21 @@ class DeviceProfile:
     timezone: str = "America/New_York"
     language: str = "en-US"
     accept_language: str = "en-US,en;q=0.9"
+    sec_ch_ua_mobile: str = "?0"
+
+    @staticmethod
+    def _parse_sec_ch_ua_to_brands(sec_ch_ua: str) -> str:
+        """Parse Sec-CH-UA header into JavaScript brands array literal.
+
+        Input:  '"Google Chrome";v="131", "Chromium";v="131", "Not=A?Brand";v="24"'
+        Output: [{brand:'Google Chrome',version:'131'},{brand:'Chromium',version:'131'},{brand:'Not=A?Brand',version:'24'}]
+        """
+        if not sec_ch_ua:
+            return "[]"
+        brands = []
+        for m in re.finditer(r'"(.*?)";v="(\d+)"', sec_ch_ua):
+            brands.append("{brand:'%s',version:'%s'}" % (m.group(1), m.group(2)))
+        return "[" + ",".join(brands) + "]"
 
     def validate(self) -> list[str]:
         errors = []
@@ -120,6 +136,35 @@ Object.defineProperty(navigator, 'language', {{
 }});
 Object.defineProperty(navigator, 'languages', {{
     get: () => ['{self.language}', '{self.language.split("-")[0]}'],
+    configurable: false,
+}});
+
+// ── Layer 1.1: Client Hints (userAgentData) ──
+Object.defineProperty(navigator, 'userAgentData', {{
+    get: () => ({{
+        brands: {self._parse_sec_ch_ua_to_brands(self.sec_ch_ua)},
+        mobile: {'true' if '?1' in self.sec_ch_ua_mobile else 'false'},
+        platform: '{self.sec_ch_ua_platform.strip(chr(34))}',
+        getHighEntropyValues: function(hints) {{
+            return Promise.resolve({{
+                brands: {self._parse_sec_ch_ua_to_brands(self.sec_ch_ua)},
+                mobile: {'true' if '?1' in self.sec_ch_ua_mobile else 'false'},
+                platform: '{self.sec_ch_ua_platform.strip(chr(34))}',
+                architecture: 'x86',
+                bitness: '64',
+                model: '',
+                platformVersion: '10.0',
+                uaFullVersion: '{self.user_agent.split("/")[-1].split(" ")[0] if "Chrome" in self.user_agent else "131.0.0.0"}',
+            }}));
+        }},
+        toJSON: function() {{
+            return {{
+                brands: {self._parse_sec_ch_ua_to_brands(self.sec_ch_ua)},
+                mobile: {'true' if '?1' in self.sec_ch_ua_mobile else 'false'},
+                platform: '{self.sec_ch_ua_platform.strip(chr(34))}',
+            }};
+        }},
+    }}),
     configurable: false,
 }});
 
