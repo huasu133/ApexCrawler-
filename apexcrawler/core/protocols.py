@@ -84,8 +84,11 @@ class PageInteractionsMixin:
 
 
 @runtime_checkable
-class Page(PageInteractionsMixin, Protocol):
-    """Abstract browser page."""
+class Page(Protocol):
+    """Abstract browser page.
+
+    各引擎的 _PageAdapter 应继承 PageInteractionsMixin 来获得交互方法。
+    """
 
     @property
     def content(self) -> str: ...
