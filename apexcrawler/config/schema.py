@@ -72,8 +72,6 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="APEX_",
         env_nested_delimiter="__",
-        yaml_file="config/base.yaml",
-        yaml_file_encoding="utf-8",
         extra="ignore",
     )
 
@@ -83,6 +81,29 @@ class Settings(BaseSettings):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+
+    @classmethod
+    def from_yaml(cls, path: str | Path = "config/base.yaml") -> Settings:
+        """Load settings from a YAML file, falling back to environment variables.
+
+        Args:
+            path: Path to YAML configuration file (default: config/base.yaml)
+
+        Returns:
+            Settings instance with values merged from YAML + env vars.
+        """
+        yaml_path = Path(path)
+        if not yaml_path.exists():
+            return cls()
+        try:
+            import yaml
+        except ImportError:
+            return cls()
+        try:
+            yaml_data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return cls()
+        return cls(**yaml_data)
 
     @model_validator(mode="before")
     @classmethod

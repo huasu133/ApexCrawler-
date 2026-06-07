@@ -137,12 +137,22 @@ def crawl(
         click.echo("No URLs to crawl.", err=True)
         sys.exit(1)
 
-    # Load settings
+    import os
+    # 清除系统代理环境变量，防止干扰爬取请求
+    for _k in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']:
+        os.environ.pop(_k, None)
+
+    # Load settings from YAML (fallback to env vars)
     try:
-        settings = Settings()
+        settings = Settings.from_yaml()
     except Exception as e:
         click.echo(f"Configuration error: {e}", err=True)
         sys.exit(1)
+
+    # 快速模式下禁用代理
+    if fast:
+        proxy_url = ""
+        geo_code = ""
 
     click.echo(f"ApexCrawler starting: {len(urls)} URL(s)")
     click.echo(f"  Schema: {schema_name}")
@@ -152,6 +162,8 @@ def crawl(
         click.echo(f"  Proxy: {proxy_url}")
     if geo_code:
         click.echo(f"  Geo: {geo_code}")
+    if fast:
+        click.echo(f"  Mode: fast (no proxy, minimal delays)")
 
     async def _run():
         results = []
@@ -192,20 +204,18 @@ def crawl(
                     extraction_schema=schema,
                 )
 
-                # Override engine if specified
+                # Engine selection: CLI arg > fast mode default
                 if engine_name:
                     ctx_obj.selected_engine = engine_name
-
-                # 未指定引擎时默认用 vanilla (Playwright)
-                if not ctx_obj.selected_engine:
+                elif fast:
+                    ctx_obj.selected_engine = "vanilla"
+                else:
                     ctx_obj.selected_engine = "vanilla"
 
-                # 清除系统代理，防止干扰爬取请求
-                import os
-                for _k in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']:
-                    os.environ.pop(_k, None)
-                if not ctx_obj.selected_engine:
-                    ctx_obj.selected_engine = "vanilla"
+                # Assemble proxy list from CLI args
+                proxies = []
+                if proxy_url:
+                    proxies = [proxy_url]
 
                 # Build pipeline stages
                 timing = TimingScheduler()
@@ -216,16 +226,17 @@ def crawl(
                         def compute_delay(self, **kw): return 0.5
                         def reset(self): pass
                     timing = _FastTiming()
+
                 stages = [
                     ScheduleStage(timing=timing),
                     RouteStage(),
-                    EvadeStage(router=tls_router, proxies=[proxy_url] if proxy_url else []),
+                    EvadeStage(router=tls_router, proxies=proxies),
                     ExtractStage(
                         engine_factory=engine_pool,
-                        conn_manager=None,  # StealthProxy 未就绪，暂不使用代理
+                        conn_manager=None,
                     ),
-                    ValidateStage(),
                     FontDecodeStage(),
+                    ValidateStage(),
                     StoreStage(),
                 ]
                 configs = {
@@ -270,7 +281,7 @@ def crawl(
                 })
 
             except ValueError as e:
-                click.echo(f"  [SSRF 安全校验失败] {e}", err=True)
+                click.echo(f"  [SSRF blocked] {e}", err=True)
                 results.append({"url": target_url, "error": f"SSRF blocked: {e}"})
             except Exception as e:
                 click.echo(f"  Error: {e}", err=True)
@@ -638,8 +649,8 @@ def ask(ctx: click.Context, query: str, output: str | None, live: bool) -> None:
                 engine_factory=engine_pool,
                 conn_manager=None,
             ),
-            ValidateStage(),
             FontDecodeStage(),
+            ValidateStage(),
             StoreStage(),
         ]
 

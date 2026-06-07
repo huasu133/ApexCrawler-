@@ -1,6 +1,6 @@
 """Concrete pipeline stage implementations.
 
-Stages in order: Schedule → Route → Evade → Extract → Validate → Store
+Stages in order: Schedule → Route → Evade → Extract → FontDecode → Validate → Store
 Each stage reads from and writes to PipelineContext.
 """
 
@@ -350,7 +350,7 @@ class ExtractStage:
 
 
 class ValidateStage:
-    """Validates extracted data against the target schema."""
+    """Validates extracted data against the target schema, then cleans it."""
 
     name = "validate"
 
@@ -369,6 +369,10 @@ class ValidateStage:
         if schema is None:
             logger.info(f"[validate] trace={ctx.trace_id} no schema — pass-through")
             ctx.validation_passed = True
+            # Clean data even without schema validation
+            from ..extraction.cleaner import clean_record
+            ctx.cleaned_data = clean_record(ctx.extracted_data)
+            logger.debug(f"[validate] clean_record applied, cleaned_data keys={list(ctx.cleaned_data.keys())}")
             return ctx
 
         # Attempt schema validation (Pydantic-style)
@@ -384,6 +388,11 @@ class ValidateStage:
             logger.warning(
                 f"[validate] trace={ctx.trace_id} validation errors: {ctx.validation_errors}"
             )
+
+        # Clean extracted data after validation (regardless of schema validation result)
+        from ..extraction.cleaner import clean_record
+        ctx.cleaned_data = clean_record(ctx.extracted_data)
+        logger.debug(f"[validate] clean_record applied, cleaned_data keys={list(ctx.cleaned_data.keys())}")
 
         return ctx
 
