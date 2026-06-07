@@ -565,7 +565,13 @@ class QidianEngine(BaseEngine):
 
         logger.info("正在获取章节列表 (book_id=%d)", book_id)
         params = {"_csrfToken": "", "bookId": str(book_id)}
-        resp = self._curl_get(session, self.CATEGORY_API, params=params)
+        # 添加浏览器必需的请求头，否则腾讯云WAF返回202
+        api_headers = {
+            "Referer": f"https://book.qidian.com/info/{book_id}",
+            "Origin": "https://book.qidian.com",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        resp = self._curl_get(session, self.CATEGORY_API, params=params, headers=api_headers)
 
         if resp["status_code"] != 200:
             logger.error("获取目录失败: HTTP %d", resp["status_code"])
@@ -621,7 +627,11 @@ class QidianEngine(BaseEngine):
 
         url = f"https://book.qidian.com/info/{book_id}"
         session = self._get_curl_session()
-        resp = self._curl_get(session, url)
+        html_headers = {
+            "Referer": "https://www.qidian.com",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        resp = self._curl_get(session, url, headers=html_headers)
 
         if resp["status_code"] != 200:
             logger.error("HTML 页面获取失败: HTTP %d", resp["status_code"])
