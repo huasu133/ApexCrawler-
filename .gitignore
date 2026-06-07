@@ -16,3 +16,12 @@ Book *.txt
 *.png
 screenshot_*
 example.com.*
+
+# Temporary research documents
+*expert-review*.md
+ApexCrawler_*.md
+隐蔽性提升方案*.md
+数据提取效率*.md
+install.sh
+setup.bat
+setup.sh
