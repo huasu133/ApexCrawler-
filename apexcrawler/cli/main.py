@@ -102,6 +102,8 @@ def cli(ctx: click.Context, log_level: str, json_log: bool) -> None:
 @click.option("--timeout", "-t", type=click.IntRange(min=1), default=30, help="Request timeout in seconds")
 @click.option("--retries", "-r", type=click.IntRange(min=1), default=3, help="Max retry attempts")
 @click.option("--fast", is_flag=True, default=False, help="Skip human-like timing delays (faster but more detectable)")
+@click.option("--resume", is_flag=True, default=False, help="Resume last interrupted crawl from checkpoint")
+@click.option("--checkpoint-dir", type=click.Path(), default=None, help="Checkpoint storage directory")
 @click.pass_context
 def crawl(
     ctx: click.Context,
@@ -115,6 +117,8 @@ def crawl(
     timeout: int,
     retries: int,
     fast: bool,
+    resume: bool,
+    checkpoint_dir: Optional[str],
 ) -> None:
     """Crawl a single URL or batch of URLs.
 
@@ -123,9 +127,11 @@ def crawl(
         apex crawl https://example.com
         apex crawl --batch urls.txt -o results.json
         apex crawl https://shop.com/product/1 -s product -e cloaked
+        apex crawl --resume  # Resume from last checkpoint
+        apex crawl https://example.com --checkpoint-dir /tmp/apex_cps
     """
-    if not url and not batch_file:
-        raise click.UsageError("Either URL argument or --batch/-b is required")
+    if not url and not batch_file and not resume:
+        raise click.UsageError("Either URL argument, --batch/-b, or --resume is required")
 
     urls: list[str] = []
     if url:
@@ -256,8 +262,44 @@ def crawl(
                     rate_controller=rate_ctrl,
                     degrade_manager=degrade_mgr,
                     plugin_manager=plugin_mgr,
+                    checkpoint_dir=checkpoint_dir,
                 )
-                ok, result = await executor.run(ctx_obj)
+
+                if resume:
+                    # 检查点续爬模式
+                    from ..pipeline.checkpoint import CheckpointManager
+                    cp_mgr = CheckpointManager(
+                        storage_dir=checkpoint_dir or ".apex_checkpoints"
+                    )
+                    checkpoints = cp_mgr.list_checkpoints()
+                    if not checkpoints:
+                        click.echo("No checkpoints found to resume.", err=True)
+                        sys.exit(1)
+
+                    latest = checkpoints[0]
+                    job_id = f"{latest['trace_id']}_{latest['stage']}"
+                    click.echo(
+                        f"  Resuming from trace={latest['trace_id']} "
+                        f"stage={latest['stage']} "
+                        f"(saved at {latest['timestamp_iso']})"
+                    )
+
+                    # 恢复上下文
+                    from ..core.context import PipelineContext
+                    from ..pipeline.checkpoint import _dict_to_context
+                    cp_data = cp_mgr.load(job_id)
+                    if cp_data is None:
+                        click.echo(
+                            f"Failed to load checkpoint: {job_id}", err=True
+                        )
+                        sys.exit(1)
+
+                    restored_ctx = _dict_to_context(
+                        cp_data["context"], PipelineContext
+                    )
+                    ok, result = await executor.resume(job_id, restored_ctx)
+                else:
+                    ok, result = await executor.run(ctx_obj)
 
                 duration = result.duration()
                 status = "success" if ok else "failed"
@@ -1497,6 +1539,15 @@ def config_validate(ctx: click.Context) -> None:
     click.echo("Configuration is valid.")
 
 
+# ── shell command ──────────────────────────────────────────
+
+@cli.command()
+def shell() -> None:
+    """进入交互式 Shell — 实时测试爬取命令。"""
+    from apexcrawler.cli.shell import InteractiveShell
+    InteractiveShell().run()
+
+
 # ── version command ────────────────────────────────────────
 
 @cli.command()
@@ -1506,6 +1557,56 @@ def version() -> None:
     click.echo(f"ApexCrawler v{__version__}")
     click.echo("Python: " + sys.version.split()[0])
     click.echo("Platform: " + sys.platform)
+
+
+# ── checkpoints command ──────────────────────────────────
+
+@cli.group()
+def checkpoints() -> None:
+    """Manage pipeline checkpoints for resume."""
+    pass
+
+
+@checkpoints.command("list")
+@click.option("--checkpoint-dir", type=click.Path(), default=None, help="Checkpoint storage directory")
+def checkpoints_list(checkpoint_dir: str | None) -> None:
+    """List all available checkpoints."""
+    from ..pipeline.checkpoint import CheckpointManager
+
+    mgr = CheckpointManager(storage_dir=checkpoint_dir or ".apex_checkpoints")
+    entries = mgr.list_checkpoints()
+
+    if not entries:
+        click.echo("No checkpoints found.")
+        return
+
+    click.echo(f"\n{len(entries)} checkpoint(s) available:\n")
+    for entry in entries:
+        stage = entry.get("stage", "?")
+        trace = entry.get("trace_id", "?")
+        ts = entry.get("timestamp_iso", "?")
+        click.echo(f"  trace={trace}  stage={stage}  saved_at={ts}")
+
+
+@checkpoints.command("clear")
+@click.option("--checkpoint-dir", type=click.Path(), default=None, help="Checkpoint storage directory")
+@click.option("--all", "clear_all", is_flag=True, default=False, help="Clear all checkpoints")
+@click.argument("job_id", required=False)
+def checkpoints_clear(checkpoint_dir: str | None, clear_all: bool, job_id: str | None) -> None:
+    """Clear checkpoint(s). Provide JOB_ID or use --all."""
+    from ..pipeline.checkpoint import CheckpointManager
+
+    mgr = CheckpointManager(storage_dir=checkpoint_dir or ".apex_checkpoints")
+
+    if clear_all:
+        mgr.clear()
+        click.echo("All checkpoints cleared.")
+    elif job_id:
+        mgr.clear(job_id)
+        click.echo(f"Checkpoint cleared: {job_id}")
+    else:
+        click.echo("Specify a job_id or use --all to clear all checkpoints.", err=True)
+        sys.exit(1)
 
 
 # ── Entry point ────────────────────────────────────────────
