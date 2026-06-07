@@ -578,7 +578,7 @@ class QidianEngine(BaseEngine):
                 logger.debug("使用缓存章节列表 (book_id=%d)", book_id)
                 return cached.chapters
 
-        # 检查 CookieJarStore 是否有有效 Cookie，没有则执行 WAF 绕过
+        chapters: List[Chapter] = []
         curl_cookies = None
         if self._cookie_store.exists:
             stored = self._cookie_store.load()
