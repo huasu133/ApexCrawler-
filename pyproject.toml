@@ -39,6 +39,7 @@ dev = [
 ]
 ocr = ["paddleocr>=2.9"]
 ai = ["openai>=1.55", "anthropic>=0.39", "ollama>=0.4"]
+mcp = ["mcp>=1.0"]
 
 [project.scripts]
 apex = "apexcrawler.cli.main:main"

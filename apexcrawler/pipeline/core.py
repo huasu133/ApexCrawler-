@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 from ..core.exceptions import NonRetryableError, RetryableError
 from ..core.context import PipelineContext
+from .checkpoint import CheckpointManager, _context_to_dict
 
 logger = logging.getLogger(__name__)
 @dataclass
@@ -29,13 +30,17 @@ class PipelineExecutor:
 
     def __init__(self, stages: list, configs: dict[str, StageConfig] | None = None,
                  settings=None, session_manager=None, rate_controller=None, degrade_manager=None,
-                 plugin_manager=None):
+                 plugin_manager=None, checkpoint_dir: str | None = None):
         self._stages = stages
         self._configs = configs or {}
         self._session_mgr = session_manager
         self._rate_ctrl = rate_controller
         self._degrade_mgr = degrade_manager
         self._plugin_mgr = plugin_manager
+        # Checkpoint manager
+        self._checkpoint_mgr = CheckpointManager(
+            storage_dir=checkpoint_dir or ".apex_checkpoints"
+        ) if checkpoint_dir else None
         # Merge stage_timeouts from Settings if provided
         if settings:
             pipeline_cfg = getattr(settings, 'pipeline', None)
@@ -84,6 +89,15 @@ class PipelineExecutor:
                 ctx = await self._execute_with_retry(stage, ctx, cfg)
                 executed.append(stage)
 
+                # Save checkpoint after each successful stage
+                if self._checkpoint_mgr:
+                    ctx_dict = _context_to_dict(ctx)
+                    self._checkpoint_mgr.save(ctx.trace_id, stage.name, ctx_dict)
+                    logger.debug(
+                        f"[checkpoint] saved after stage={stage.name} "
+                        f"trace={ctx.trace_id}"
+                    )
+
                 # Plugin hook: on_post_extract
                 if self._plugin_mgr and stage.name == "extract":
                     await self._plugin_mgr.dispatch("on_post_extract", ctx)
@@ -115,6 +129,78 @@ class PipelineExecutor:
                 await self._rollback(executed, ctx)
                 return False, ctx
         return True, ctx
+
+    async def resume(self, job_id: str, ctx: PipelineContext | None = None):
+        """从检查点恢复 pipeline 执行。
+
+        加载指定 job_id 的最新检查点，跳过已完成的 stage，
+        继续执行剩余的 pipeline。
+
+        Args:
+            job_id: 格式为 "{trace_id}_{stage}" 的作业 ID。
+            ctx: 可选，提供初始上下文。若不提供，从检查点恢复。
+
+        Returns:
+            (success, ctx) 元组。
+        """
+        if not self._checkpoint_mgr:
+            raise RuntimeError(
+                "CheckpointManager is not initialized. "
+                "Pass checkpoint_dir to PipelineExecutor to enable checkpointing."
+            )
+
+        checkpoint = self._checkpoint_mgr.load(job_id)
+        if checkpoint is None:
+            raise FileNotFoundError(f"Checkpoint not found for job_id={job_id}")
+
+        data = checkpoint["context"]
+        last_stage = checkpoint["stage"]
+
+        # 恢复上下文
+        from ..core.context import PipelineContext as PC
+        restored_ctx = _dict_to_context(data, PC) if ctx is None else ctx
+        logger.info(
+            f"[checkpoint] resuming trace={restored_ctx.trace_id} "
+            f"from stage={last_stage}"
+        )
+
+        # 找到已完成的 stage 索引，跳过它及之前的 stage
+        skip_until = -1
+        for i, stage in enumerate(self._stages):
+            if stage.name == last_stage:
+                skip_until = i
+                break
+
+        if skip_until < 0:
+            logger.warning(
+                f"[checkpoint] stage={last_stage} not found in current pipeline, "
+                f"starting from beginning"
+            )
+            return await self.run(restored_ctx)
+
+        remaining = self._stages[skip_until + 1:]
+        if not remaining:
+            logger.info(
+                f"[checkpoint] all stages already completed for trace={restored_ctx.trace_id}"
+            )
+            return True, restored_ctx
+
+        logger.info(
+            f"[checkpoint] skipping {skip_until + 1} stage(s), "
+            f"remaining: {[s.name for s in remaining]}"
+        )
+
+        # 只用剩余的 stage 创建临时 executor 并运行
+        rescue_executor = PipelineExecutor(
+            remaining,
+            configs=self._configs,
+            settings=None,
+            session_manager=self._session_mgr,
+            rate_controller=self._rate_ctrl,
+            degrade_manager=self._degrade_mgr,
+            plugin_manager=self._plugin_mgr,
+        )
+        return await rescue_executor.run(restored_ctx)
 
     async def _execute_with_retry(self, stage, ctx, cfg):
         last_exc = None
