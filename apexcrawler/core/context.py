@@ -48,6 +48,7 @@ class PipelineContext:
     fonts: list[str] = field(default_factory=list)
     # ── Extract stage outputs ──
     raw_html: str = ""
+    raw_crawl4ai: str = ""  # Crawl4AI-enhanced clean content (markdown)
     extracted_data: dict | None = None
     extraction_confidence: float = 0.0
 

@@ -281,6 +281,14 @@ class ExtractStage:
                 logger.debug(f"[extract] cleaner applied, {len(ctx.raw_html)} bytes")
             except Exception:
                 pass
+
+            # Step 1b: Enhance with Crawl4AI content filtering
+            # Run when HTTP content is available but confidence is moderate
+            try:
+                await self._try_crawl4ai(ctx)
+            except Exception as e:
+                logger.debug(f"[extract] crawl4ai enhancement skipped: {e}")
+
             # Use higher confidence for API/JSON responses
             if self._api_detected:
                 ctx.extraction_confidence = 0.8
@@ -420,6 +428,54 @@ class ExtractStage:
         except Exception as e:
             logger.warning(f"[extract] Browser failed: {e}")
             return None
+
+    async def _try_crawl4ai(self, ctx: PipelineContext) -> None:
+        """Enhance extracted content using Crawl4AI's content filtering.
+
+        Uses Crawl4AI's PruningContentFilter to strip navigation, ads,
+        and boilerplate, producing cleaner markdown. Stores the result
+        in ctx.raw_crawl4ai and may raise confidence if content improves.
+        """
+        if not ctx.raw_html or len(ctx.raw_html) < 500:
+            return
+
+        try:
+            from crawl4ai.content_filter_strategy import PruningContentFilter
+            from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
+        except ImportError:
+            logger.debug("[extract] crawl4ai not available, skipping enhancement")
+            return
+
+        # Only enhance if confidence is moderate (structured data already handled)
+        if ctx.extraction_confidence >= 0.85:
+            return
+
+        # Generate clean markdown with PruningContentFilter
+        filter_ = PruningContentFilter(threshold=0.48, threshold_type="fixed")
+        md_generator = DefaultMarkdownGenerator(content_filter=filter_)
+        result = md_generator.generate_markdown(ctx.raw_html)
+
+        # Prefer fit_markdown (filtered), fall back to raw_markdown
+        clean_md = ""
+        if hasattr(result, "fit_markdown") and result.fit_markdown:
+            clean_md = result.fit_markdown
+        elif hasattr(result, "raw_markdown") and result.raw_markdown:
+            clean_md = result.raw_markdown
+
+        if clean_md and len(clean_md) > 50:
+            ctx.raw_crawl4ai = clean_md
+            # Raise confidence if crawl4ai produced meaningful improvements
+            original_len = len(ctx.raw_html)
+            ratio = len(clean_md) / max(original_len, 1)
+            logger.info(
+                f"[extract] crawl4ai: {original_len}B HTML → {len(clean_md)}B md "
+                f"(ratio={ratio:.2f})"
+            )
+            # If content was significantly cleaned (ratio indicates noise removal)
+            if ratio < 0.8 and len(clean_md) > 100:
+                ctx.extraction_confidence = max(ctx.extraction_confidence or 0, 0.75)
+        else:
+            logger.debug("[extract] crawl4ai: no meaningful content produced")
 
     def _extract_structured_data(self, html: str) -> dict | None:
         """Extract JSON-LD, Open Graph, and Microdata from HTML.
