@@ -77,17 +77,45 @@ def _validate_url(url: str) -> str:
     return url
 
 
-@click.group()
-@click.option("--log-level", type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=True), default="INFO", help="日志级别（DEBUG, INFO, WARNING, ERROR）")
+def _show_welcome():
+    """Display welcome banner with quick-start examples."""
+    click.echo()
+    click.echo("  ApexCrawler v0.1.0 — 自适应网页爬虫框架")
+    click.echo("  " + "=" * 40)
+    click.echo()
+    click.echo("  快速开始:")
+    click.echo("    apex crawl https://example.com           爬取页面")
+    click.echo("    apex crawl https://example.com --engine cloaked_v2  隐身爬取")
+    click.echo("    apex extract https://example.com         提取内容")
+    click.echo("    apex ask '爬取某个产品信息'               自然语言")
+    click.echo("    apex dashboard                           启动面板")
+    click.echo()
+    click.echo("  更多: apex --help")
+    click.echo()
+
+
+@click.group(invoke_without_command=True)
+@click.option("--log-level", type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=True), default="INFO", help="日志级别 (--quiet=WARNING, --verbose=DEBUG)")
 @click.option("--json-log", is_flag=True, default=False, help="以 JSON 格式输出日志")
+@click.option("--quiet", is_flag=True, default=False, help="静默模式，仅显示错误")
+@click.option("--verbose", is_flag=True, default=False, help="详细模式，显示调试信息")
 @click.pass_context
-def cli(ctx: click.Context, log_level: str, json_log: bool) -> None:
-    """ApexCrawler — 自适应网页爬虫框架，专为反爬对抗场景设计。"""
+def cli(ctx: click.Context, log_level: str, json_log: bool, quiet: bool, verbose: bool) -> None:
+    """ApexCrawler — 自适应网页爬虫框架。"""
+    # Show quick-start if no command
+    if ctx.invoked_subcommand is None:
+        _show_welcome()
+        ctx.exit()
+
     from ..utils.logger import configure_logging
     # Suppress logging noise during --help output
     if any(arg in sys.argv for arg in ("--help", "-h")):
         log_level = "ERROR"
         json_log = False
+    if quiet:
+        log_level = "WARNING"
+    elif verbose:
+        log_level = "DEBUG"
     configure_logging(level=log_level, json_format=json_log)
     ctx.ensure_object(dict)
     ctx.obj["log_level"] = log_level
@@ -106,7 +134,8 @@ def cli(ctx: click.Context, log_level: str, json_log: bool) -> None:
 @click.option("--timeout", "-t", type=click.IntRange(min=1), default=30, help="请求超时时间（秒）")
 @click.option("--retries", "-r", type=click.IntRange(min=1), default=3, help="最大重试次数")
 @click.option("--fast", is_flag=True, default=False, help="跳过人类行为模拟延迟（更快但更容易被检测）")
-@click.option("--show", is_flag=True, default=False, help="直接显示页面内容（代替 JSON 输出）")
+@click.option("--markdown", "markdown_output", is_flag=True, default=False, help="输出为干净的 Markdown 格式（使用 Crawl4AI 提纯）")
+@click.option("--json/--no-json", "json_output", default=False, help="输出 JSON 格式结果（默认直接显示内容）")
 @click.option("--resume", is_flag=True, default=False, help="从上次中断的检查点恢复爬取")
 @click.option("--checkpoint-dir", type=click.Path(), default=None, help="检查点存储目录")
 @click.pass_context
@@ -122,7 +151,8 @@ def crawl(
     timeout: int,
     retries: int,
     fast: bool,
-    show: bool,
+    markdown_output: bool,
+    json_output: bool,
     resume: bool,
     checkpoint_dir: Optional[str],
 ) -> None:
@@ -133,6 +163,7 @@ def crawl(
     \b
     示例:
         apex crawl https://example.com
+        apex crawl --batch urls.txt
         apex crawl --batch urls.txt -o results.json
         apex crawl https://shop.com/product/1 -s product -e cloaked
         apex crawl --resume  # 从上次检查点恢复
@@ -330,9 +361,10 @@ def crawl(
                     "stored_id": result.stored_id,
                     "errors": result.validation_errors,
                 })
-                # Store raw HTML for --show mode
-                if show:
-                    results[-1]["raw_html"] = result.raw_html or ""
+                # Store raw content for output
+                results[-1]["raw_html"] = result.raw_html or ""
+                if markdown_output:
+                    results[-1]["raw_crawl4ai"] = getattr(result, "raw_crawl4ai", "") or ""
 
             except ValueError as e:
                 click.echo(f"  [SSRF blocked] {e}", err=True)
@@ -342,20 +374,33 @@ def crawl(
                 results.append({"url": target_url, "error": str(e)})
 
         # Output
-        if show and results:
-            # --show mode: output page content directly
-            for r in results:
-                html = r.get("raw_html", r.get("html", ""))
-                if html:
-                    click.echo(html[:10000])
-                elif "error" in r:
-                    click.echo(f"Error: {r['error']}")
-        elif output_file:
+        if output_file:
+            # Save to file (always JSON)
             output_path = Path(output_file)
             output_path.write_text(json.dumps(results, indent=2, ensure_ascii=False))
             click.echo(f"\nResults written to: {output_path}")
-        else:
+        elif json_output:
+            # JSON output mode
             click.echo(f"\nResults: {json.dumps(results, indent=2, ensure_ascii=False)}")
+        else:
+            # Default: show page content directly
+            for r in results:
+                error = r.get("error", "")
+                if error:
+                    click.echo(f"Error: {error}")
+                    continue
+
+                if markdown_output:
+                    # Try to show Crawl4AI markdown content
+                    content = r.get("raw_crawl4ai", "") or r.get("raw_html", "")
+                else:
+                    # Show raw HTML content
+                    content = r.get("raw_html", r.get("html", ""))
+
+                if content:
+                    click.echo(content[:20000])
+                else:
+                    click.echo(f"Crawled: {r.get('url', '')} ({r.get('html_bytes', 0)} bytes)")
 
         # 关闭所有引擎实例
         await engine_pool.close_all()
@@ -878,6 +923,8 @@ async def _try_http_extract(url: str, hints: dict) -> dict | None:
                 if m:
                     extracted["phone"] = m.group(1)
 
+    if extracted:
+        extracted["_raw_html"] = html[:50000]
     return extracted if extracted else None
 
 
@@ -1137,8 +1184,13 @@ body{font-family:system-ui,sans-serif;background:#0f0f23;color:#e0e0e0;min-heigh
 .field{margin-bottom:12px;padding:10px;background:#0f0f23;border-radius:6px}
 .field-label{color:#888;font-size:11px;text-transform:uppercase}
 .field-value{color:#4ecca3;font-size:14px;margin-top:4px;word-break:break-all}
+.result-box{background:#1a1a2e;border-radius:12px;padding:24px;margin-top:24px;display:none}
+.result-box.visible{display:block}
+.tab-btn{font-size:13px;transition:all .2s}
+.tab-btn:hover{color:#e94560!important}
 .spinner{display:none;text-align:center;padding:20px}
-.spinner.active{display:block}
+.spinner.active{display:inline-block;width:20px;height:20px;border:2px solid #333;border-top-color:#e94560;border-radius:50%;animation:spin .8s linear infinite;margin-left:8px;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
 .tips{background:#1a1a2e;border-radius:12px;padding:20px;margin-top:24px}
 .tips h4{color:#888;margin-bottom:12px}
 .tip{color:#666;font-size:12px;margin:6px 0;padding:4px 0}
@@ -1158,9 +1210,15 @@ body{font-family:system-ui,sans-serif;background:#0f0f23;color:#e0e0e0;min-heigh
     <button class="btn" id="submit" onclick="ask()">🔍 开始爬取</button>
   </div>
   <div class="spinner" id="spinner">⏳ 分析页面中...</div>
-  <div class="result" id="result">
-    <h3>📊 提取结果</h3>
-    <div id="fields"></div>
+  <div id="result" class="result-box">
+    <div class="tabs" style="display:flex;gap:4px;margin-bottom:12px;border-bottom:1px solid #333;">
+      <button class="tab-btn active" onclick="switchTab('content')" style="background:none;border:none;color:#e94560;padding:8px 16px;cursor:pointer;font-size:13px;border-bottom:2px solid #e94560;">内容</button>
+      <button class="tab-btn" onclick="switchTab('json')" style="background:none;border:none;color:#888;padding:8px 16px;cursor:pointer;font-size:13px;">JSON</button>
+      <button class="tab-btn" onclick="switchTab('raw')" style="background:none;border:none;color:#888;padding:8px 16px;cursor:pointer;font-size:13px;">原始HTML</button>
+    </div>
+    <div id="tab-content" style="background:#0f0f23;border-radius:8px;padding:16px;max-height:500px;overflow:auto;font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-all;"></div>
+    <div id="tab-json" style="display:none;background:#0f0f23;border-radius:8px;padding:16px;max-height:500px;overflow:auto;font-size:12px;line-height:1.5;font-family:monospace;white-space:pre;"></div>
+    <div id="tab-raw" style="display:none;background:#0f0f23;border-radius:8px;padding:16px;max-height:500px;overflow:auto;font-size:11px;line-height:1.4;font-family:monospace;white-space:pre-wrap;word-break:break-all;"></div>
   </div>
   <div class="tips">
     <h4>💡 使用提示</h4>
@@ -1182,18 +1240,55 @@ async function ask() {
       body: JSON.stringify({query})
     });
     const data = await resp.json();
-    const fieldsDiv = document.getElementById('fields');
-    fieldsDiv.innerHTML = Object.entries(data.data||{}).map(([k,v]) =>
-      `<div class="field"><div class="field-label">${k}</div><div class="field-value">${v}</div></div>`
-    ).join('') || '<div style="color:#888">未提取到数据。试试更具体的查询，或直接用 URL。</div>';
+    
+    // Show content in markdown-like format
+    const contentDiv = document.getElementById('tab-content');
+    const jsonDiv = document.getElementById('tab-json');
+    const rawDiv = document.getElementById('tab-raw');
+    
+    // Content tab: show text content (from data.data or data.markdown)
+    const fields = data.data || {};
+    const markdown = data.markdown || '';
+    let contentHtml = '';
+    if (markdown) {
+      contentHtml = '<div style="color:#e0e0e0;">' + markdown.replace(/\n/g, '<br>') + '</div>';
+    } else {
+      contentHtml = Object.entries(fields).map(([k,v]) => 
+        `<div style="margin-bottom:8px;"><span style="color:#e94560;font-weight:500;">${k}</span><br><span style="color:#ccc;">${v}</span></div>`
+      ).join('');
+      // Exclude internal fields
+      contentHtml = contentHtml.replace(/<div[^>]*>_raw_html[^<]*<\/div>/g, '');
+    }
+    if (!contentHtml) contentHtml = '<div style="color:#888;">未提取到内容</div>';
+    contentDiv.innerHTML = contentHtml;
+    
+    // JSON tab
+    jsonDiv.textContent = JSON.stringify(data, null, 2);
+    
+    // Raw tab: show raw HTML if available
+    rawDiv.textContent = data.raw_html || '无原始 HTML';
+    
     document.getElementById('result').classList.add('visible');
+    switchTab('content');
   } catch(e) {
-    document.getElementById('fields').innerHTML = `<div style="color:#e94560">请求失败: ${e.message}</div>`;
+    document.getElementById('tab-content').innerHTML = '<div style="color:#e94560;">请求失败: ' + e.message + '</div>';
     document.getElementById('result').classList.add('visible');
-  } finally {
-    document.getElementById('submit').disabled = false;
-    document.getElementById('spinner').classList.remove('active');
   }
+  document.getElementById('spinner').classList.remove('active');
+  document.getElementById('submit').disabled = false;
+}
+
+function switchTab(name) {
+  const tabs = ['content', 'json', 'raw'];
+  const labels = {'content':'内容','json':'JSON','raw':'原始HTML'};
+  tabs.forEach(t => {
+    const el = document.getElementById('tab-' + t);
+    if (el) el.style.display = t === name ? 'block' : 'none';
+  });
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.style.color = btn.textContent === labels[name] ? '#e94560' : '#888';
+    btn.style.borderBottom = btn.textContent === labels[name] ? '2px solid #e94560' : '2px solid transparent';
+  });
 }
 document.getElementById('query').addEventListener('keydown', e => {
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) ask();
@@ -1261,6 +1356,8 @@ document.getElementById('query').addEventListener('keydown', e => {
             "template": template.name if template else None,
             "detected_fields": detected_fields,
             "data": extracted or {},
+            "raw_html": (extracted or {}).get("_raw_html", ""),
+            "markdown": (extracted or {}).get("_raw_html", ""),
         })
 
     @app.get("/api/templates")
