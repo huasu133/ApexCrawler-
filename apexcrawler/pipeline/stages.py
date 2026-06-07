@@ -40,14 +40,14 @@ class ScheduleStage:
 
         if self._timing is not None:
             delay = self._timing.compute_delay()
-            logger.info(
+            logger.debug(
                 f"[schedule] trace={ctx.trace_id} computed_delay={delay:.2f}s"
                 f" url={ctx.target_url}"
             )
             import asyncio
             await asyncio.sleep(delay)
         else:
-            logger.info(f"[schedule] trace={ctx.trace_id} url={ctx.target_url}")
+            logger.debug(f"[schedule] trace={ctx.trace_id} url={ctx.target_url}")
 
         return ctx
 
@@ -77,7 +77,7 @@ class RouteStage:
         # If an engine was already forced (e.g. via CLI --engine or MCP param),
         # skip routing and preserve the user's explicit choice
         if ctx.selected_engine:
-            logger.info(
+            logger.debug(
                 f"[route] trace={ctx.trace_id} engine already forced: "
                 f"{ctx.selected_engine} (skipping routing)"
             )
@@ -98,7 +98,7 @@ class RouteStage:
             ctx.route_reason = result.reason
             ctx.target_difficulty = result.difficulty
 
-        logger.info(
+        logger.debug(
             f"[route] trace={ctx.trace_id} engine={ctx.selected_engine} "
             f"reason={ctx.route_reason} difficulty={ctx.target_difficulty}"
         )
@@ -193,7 +193,7 @@ class EvadeStage:
             "Verdana", "Trebuchet MS", "Comic Sans MS",
         ]
 
-        logger.info(
+        logger.debug(
             f"[evade] trace={ctx.trace_id} profile={profile.name} "
             f"proxy={ctx.proxy or 'none'} ja4={profile.ja4_prefix} "
             f"device={dp.name} engine={ctx.selected_engine}"
@@ -265,7 +265,7 @@ class ExtractStage:
         if not ctx.target_url:
             raise ConfigurationError("No target URL")
 
-        logger.info(
+        logger.debug(
             f"[extract] trace={ctx.trace_id} engine={ctx.selected_engine or 'http'} "
             f"url={ctx.target_url}"
         )
@@ -313,7 +313,7 @@ class ExtractStage:
             if healed:
                 ctx.raw_html = healed
                 ctx.extraction_confidence = 0.4
-                logger.info(f"[extract] sel_healer recovered content")
+                logger.debug(f"[extract] sel_healer recovered content")
                 return ctx
         except Exception as e:
             logger.debug(f"[extract] sel_healer failed: {e}")
@@ -327,7 +327,7 @@ class ExtractStage:
         is_api = mobile_endpoint is not None and mobile_endpoint.confidence >= 0.9
 
         if mobile_endpoint:
-            logger.info(
+            logger.debug(
                 f"[extract] mobile_sniffer → {fetch_url} "
                 f"(confidence={mobile_endpoint.confidence:.1f}, source={mobile_endpoint.source})"
             )
@@ -376,7 +376,7 @@ class ExtractStage:
             if is_api:
                 self._api_detected = True
                 ctx.extraction_confidence = 0.8
-                logger.info(
+                logger.debug(
                     f"[extract] mobile API response received, confidence=0.8"
                 )
                 return html
@@ -402,7 +402,7 @@ class ExtractStage:
                     # If structured data has meaningful content, elevate confidence
                     ctx.extracted_data = structured
                     ctx.extraction_confidence = max(ctx.extraction_confidence or 0.5, 0.85)
-                    logger.info(
+                    logger.debug(
                         f"[extract] structured data found: {len(structured)} fields "
                         f"(json_ld={len([k for k in structured if not k.startswith(('og_','md_'))])}, "
                         f"og={len([k for k in structured if k.startswith('og_')])}, "
@@ -467,7 +467,7 @@ class ExtractStage:
             # Raise confidence if crawl4ai produced meaningful improvements
             original_len = len(ctx.raw_html)
             ratio = len(clean_md) / max(original_len, 1)
-            logger.info(
+            logger.debug(
                 f"[extract] crawl4ai: {original_len}B HTML → {len(clean_md)}B md "
                 f"(ratio={ratio:.2f})"
             )
@@ -549,7 +549,7 @@ class ValidateStage:
         ctx.validation_errors = []
 
         if ctx.extracted_data is None:
-            logger.info(
+            logger.debug(
                 f"[validate] trace={ctx.trace_id} no extracted data to validate "
                 f"(confidence={ctx.extraction_confidence:.2f})"
             )
@@ -558,7 +558,7 @@ class ValidateStage:
 
         schema = ctx.extraction_schema
         if schema is None:
-            logger.info(f"[validate] trace={ctx.trace_id} no schema — pass-through")
+            logger.debug(f"[validate] trace={ctx.trace_id} no schema — pass-through")
             ctx.validation_passed = True
             # Clean data even without schema validation
             from ..extraction.cleaner import clean_record
@@ -673,7 +673,7 @@ class StoreStage:
             if cached_html:
                 ctx.raw_html = cached_html
                 ctx.incremental_hit = True
-                logger.info(
+                logger.debug(
                     f"[store] incremental cache hit for {ctx.target_url} "
                     f"(stored_id={ctx.stored_id})"
                 )
@@ -682,7 +682,7 @@ class StoreStage:
                 self._save_to_cache(ctx.target_url, ctx.raw_html, ctx._last_headers)
                 ctx.incremental_hit = False
 
-        logger.info(
+        logger.debug(
             f"[store] trace={ctx.trace_id} stored_id={ctx.stored_id} "
             f"engine={ctx.selected_engine} duration={ctx.duration():.2f}s "
             f"valid={ctx.validation_passed}"
@@ -722,14 +722,14 @@ class FontDecodeStage:
             # Step 1: Fix DOM CSS position offsets
             fixed_html = self._fixer.fix(ctx.raw_html)
             ctx.raw_html = fixed_html
-            logger.info(f"[font_decode] DOMFixer applied")
+            logger.debug(f"[font_decode] DOMFixer applied")
 
             # Step 2: Try FontTools glyph mapping
             decoded = await self._cracker.decode(ctx.raw_html)
             if decoded and decoded != ctx.raw_html:
                 ctx.raw_html = decoded
                 ctx.extraction_confidence = max(ctx.extraction_confidence or 0, 0.85)
-                logger.info(f"[font_decode] FontTools decoded successfully")
+                logger.debug(f"[font_decode] FontTools decoded successfully")
                 return ctx
 
             # Step 3: OCR fallback for dynamic glyphs
@@ -737,7 +737,7 @@ class FontDecodeStage:
             if ocr_result and ocr_result.confidence > 0.7:
                 ctx.raw_html = ocr_result.text
                 ctx.extraction_confidence = max(ctx.extraction_confidence or 0, ocr_result.confidence)
-                logger.info(
+                logger.debug(
                     f"[font_decode] OCR decoded (confidence={ocr_result.confidence:.2f})"
                 )
         except Exception as e:

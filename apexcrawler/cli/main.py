@@ -42,6 +42,20 @@ _BLOCKED_NETWORKS = [
 ]
 
 
+def _format_error(message: str) -> str:
+    """Format error messages with actionable fixes."""
+    import re
+    patterns = [
+        (r"No module named '(\w+)'", r"Missing dependency: \1\n  Fix: pip install \1"),
+        (r"ModuleNotFoundError: No module named '(\w+)'", r"Missing dependency: \1\n  Fix: pip install \1"),
+        (r"pip install", r"\g<0>"),
+    ]
+    for pattern, replacement in patterns:
+        if re.search(pattern, message, re.I):
+            return re.sub(pattern, replacement, message, re.I)
+    return message
+
+
 def _validate_url(url: str) -> str:
     """Validate URL for SSRF protection.
 
@@ -84,18 +98,21 @@ def _show_welcome():
     click.echo("  " + "=" * 40)
     click.echo()
     click.echo("  快速开始:")
-    click.echo("    apex crawl https://example.com           爬取页面")
-    click.echo("    apex crawl https://example.com --engine cloaked_v2  隐身爬取")
-    click.echo("    apex extract https://example.com         提取内容")
-    click.echo("    apex ask '爬取某个产品信息'               自然语言")
-    click.echo("    apex dashboard                           启动面板")
+    click.echo(f"    apex get https://example.com                 获取页面内容")
+    click.echo(f"    apex get https://example.com -o text         获取纯文本")
+    click.echo(f"    apex view https://example.com                截图查看页面")
+    click.echo(f"    apex save https://example.com                下载保存")
     click.echo()
-    click.echo("  更多: apex --help")
+    click.echo(f"  高级:")
+    click.echo(f"    apex get https://example.com --engine cloaked_v2  隐身爬取")
+    click.echo(f"    apex dashboard                                   启动面板")
+    click.echo(f"    apex ask '爬取产品信息'                           自然语言")
+    click.echo(f"    apex --help                                      全部命令")
     click.echo()
 
 
 @click.group(invoke_without_command=True)
-@click.option("--log-level", type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=True), default="INFO", help="日志级别 (--quiet=WARNING, --verbose=DEBUG)")
+@click.option("--log-level", type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=True), default="WARNING", help="日志级别 (--quiet=WARNING, --verbose=INFO, --log-level DEBUG=DEBUG)")
 @click.option("--json-log", is_flag=True, default=False, help="以 JSON 格式输出日志")
 @click.option("--quiet", is_flag=True, default=False, help="静默模式，仅显示错误")
 @click.option("--verbose", is_flag=True, default=False, help="详细模式，显示调试信息")
@@ -115,7 +132,7 @@ def cli(ctx: click.Context, log_level: str, json_log: bool, quiet: bool, verbose
     if quiet:
         log_level = "WARNING"
     elif verbose:
-        log_level = "DEBUG"
+        log_level = "INFO"
     configure_logging(level=log_level, json_format=json_log)
     ctx.ensure_object(dict)
     ctx.obj["log_level"] = log_level
@@ -125,7 +142,7 @@ def cli(ctx: click.Context, log_level: str, json_log: bool, quiet: bool, verbose
 
 # ── crawl command ──────────────────────────────────────────
 
-@cli.command()
+@cli.command(hidden=True)
 @click.argument("url", required=False)
 @click.option("--batch", "-b", "batch_file", type=click.Path(exists=True), help="包含 URL 的文件（每行一个）")
 @click.option("--output", "-o", "output_file", type=click.Path(), help="结果输出文件（JSON 格式）")
@@ -198,7 +215,7 @@ def crawl(
     try:
         settings = Settings.from_yaml()
     except Exception as e:
-        click.echo(f"Configuration error: {e}", err=True)
+        click.echo(_format_error(f"Configuration error: {e}"), err=True)
         sys.exit(1)
 
     # 快速模式下禁用代理
@@ -388,7 +405,7 @@ def crawl(
                 click.echo(f"  [SSRF blocked] {e}", err=True)
                 results.append({"url": target_url, "error": f"SSRF blocked: {e}"})
             except Exception as e:
-                click.echo(f"  Error: {e}", err=True)
+                click.echo(_format_error(f"  Error: {e}"), err=True)
                 results.append({"url": target_url, "error": str(e)})
 
         # Output
@@ -483,7 +500,7 @@ def visual(ctx: click.Context, url: str) -> None:
 
 # ── template command ───────────────────────────────────────
 
-@cli.group()
+@cli.group(hidden=True)
 def template() -> None:
     """管理提取模板。"""
     pass
@@ -948,7 +965,7 @@ async def _try_http_extract(url: str, hints: dict) -> dict | None:
 
 # ── extract command ────────────────────────────────────────
 
-@cli.command()
+@cli.command(hidden=True)
 @click.argument("url")
 @click.option("--output", "-o", help="输出文件路径")
 @click.option("--selector", "-s", help="CSS 选择器（如 'h1'、'.price'、'#main'）")
@@ -993,7 +1010,7 @@ def extract(
     try:
         result = fetcher.get(url)
     except Exception as e:
-        click.echo(f"Fetch failed: {e}", err=True)
+        click.echo(_format_error(f"Fetch failed: {e}"), err=True)
         sys.exit(1)
     finally:
         fetcher.close()
@@ -1030,7 +1047,7 @@ def extract(
             doc = fromstring(html)
             elements = doc.cssselect(selector)
         except Exception as e:
-            click.echo(f"Selector error: {e}", err=True)
+            click.echo(_format_error(f"Selector error: {e}"), err=True)
             sys.exit(1)
 
         if not elements:
@@ -1400,6 +1417,125 @@ document.getElementById('query').addEventListener('keydown', e => {
     await server.serve()
 
 
+# ── get command ────────────────────────────────────────────
+
+
+@cli.command(name="get", help="获取页面内容（静默模式，直接输出）")
+@click.argument("url", required=True)
+@click.option("--engine", "-e", default="", help="引擎类型 (cloaked_v2, camoufox, patched, vanilla)")
+@click.option("--proxy", "-p", default="", help="代理地址")
+@click.option("--timeout", "-t", type=int, default=30, help="超时秒数")
+@click.option("--output", "-o", type=click.Choice(["html", "text"]), default="html", help="输出格式")
+@click.pass_context
+def get_cmd(ctx: click.Context, url: str, engine: str, proxy: str, timeout: int, output: str) -> None:
+    """快速获取页面内容。完全静默，只输出内容，不输出日志和元数据。
+
+    示例:
+        apex get https://example.com
+        apex get https://example.com --engine cloaked_v2
+        apex get https://example.com -o text
+    """
+    try:
+        from apexcrawler.get import get
+        content = get(url, engine=engine, proxy=proxy, timeout=timeout, output=output)
+        click.echo(content, nl=False)
+    except Exception as e:
+        click.echo(_format_error(f"Error: {e}"), err=True)
+        raise click.Abort()
+
+
+# ── view command ───────────────────────────────────────────
+
+
+@cli.command(name="view", help="在浏览器中查看页面并截图")
+@click.argument("url", required=True)
+@click.option("--engine", "-e", default="cloaked_v2", help="引擎类型")
+@click.option("--output", "-o", default="", help="截图保存路径（默认自动生成）")
+@click.pass_context
+def view_cmd(ctx: click.Context, url: str, engine: str, output: str) -> None:
+    """使用浏览器引擎渲染页面并保存截图。
+
+    示例:
+        apex view https://example.com
+        apex view https://example.com --engine cloaked_v2
+    """
+    import asyncio
+    import os
+
+    async def _view():
+        save_path = output or f"screenshot_{url.split('//')[-1].split('/')[0]}.png"
+
+        if engine == "cloaked_v2":
+            try:
+                import cloakbrowser
+                b = await cloakbrowser.launch_async(headless=True)
+                p = await b.new_page()
+                await p.goto(url, wait_until="networkidle", timeout=30000)
+                await p.screenshot(path=save_path, full_page=True)
+                title = await p.title()
+                await b.close()
+                click.echo(f"Title: {title}")
+                click.echo(f"Screenshot: {os.path.abspath(save_path)}")
+            except ImportError:
+                click.echo("CloakBrowser not installed. Install: pip install cloakbrowser", err=True)
+                raise click.Abort()
+        else:
+            try:
+                from playwright.async_api import async_playwright
+                async with async_playwright() as pw:
+                    browser = await pw.chromium.launch(headless=True)
+                    page = await browser.new_page()
+                    await page.goto(url, wait_until="networkidle", timeout=30000)
+                    await page.screenshot(path=save_path, full_page=True)
+                    title = await page.title()
+                    await browser.close()
+                    click.echo(f"Title: {title}")
+                    click.echo(f"Screenshot: {os.path.abspath(save_path)}")
+            except Exception as e:
+                click.echo(_format_error(f"Browser error: {e}"), err=True)
+                raise click.Abort()
+
+    asyncio.run(_view())
+
+
+# ── save command ───────────────────────────────────────────
+
+
+@cli.command(name="save", help="下载页面内容保存到文件")
+@click.argument("url", required=True)
+@click.option("--output", "-o", default="", help="保存路径（默认自动推断）")
+@click.option("--engine", "-e", default="", help="引擎类型")
+@click.option("--format", "fmt", type=click.Choice(["html", "text"]), default="html", help="保存格式")
+@click.pass_context
+def save_cmd(ctx: click.Context, url: str, output: str, engine: str, fmt: str) -> None:
+    """下载页面内容并保存到文件。自动推断文件名，支持 html/text 格式。
+
+    示例:
+        apex save https://example.com
+        apex save https://example.com -o page.html
+        apex save https://example.com --format text
+    """
+    import os
+    from urllib.parse import urlparse
+
+    try:
+        from apexcrawler.get import get
+        content = get(url, engine=engine, timeout=60, output=fmt)
+
+        if not output:
+            domain = urlparse(url).netloc or "page"
+            output = f"{domain}.{'txt' if fmt == 'text' else 'html'}"
+
+        with open(output, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        size = len(content)
+        click.echo(f"Saved: {os.path.abspath(output)} ({size} bytes)")
+    except Exception as e:
+        click.echo(_format_error(f"Error: {e}"), err=True)
+        raise click.Abort()
+
+
 # ── qidian command ────────────────────────────────────────
 
 @cli.group()
@@ -1434,7 +1570,7 @@ def login(cookie_name: str) -> None:
         else:
             click.echo("登录失败，未能获取到 Cookie")
     except Exception as e:
-        click.echo(f"登录失败: {e}", err=True)
+        click.echo(_format_error(f"登录失败: {e}"), err=True)
         sys.exit(1)
 
 
@@ -1488,7 +1624,7 @@ def info(book_id: int, cookie_name: str, no_cookie: bool) -> None:
         if len(chapters) > 50:
             click.echo(f"\n... 共 {len(chapters)} 章，仅展示前 50 章")
     except Exception as e:
-        click.echo(f"获取信息失败: {e}", err=True)
+        click.echo(_format_error(f"获取信息失败: {e}"), err=True)
         sys.exit(1)
 
 
@@ -1575,13 +1711,13 @@ def crawl(
             )
 
     except Exception as e:
-        click.echo(f"爬取失败: {e}", err=True)
+        click.echo(_format_error(f"爬取失败: {e}"), err=True)
         sys.exit(1)
 
 
 # ── config command ─────────────────────────────────────────
 
-@cli.group()
+@cli.group(hidden=True)
 def config() -> None:
     """管理 ApexCrawler 配置。"""
     pass
@@ -1603,7 +1739,7 @@ def config_show(ctx: click.Context, full: bool) -> None:
 
         click.echo(json.dumps(data, indent=2, default=str, ensure_ascii=False))
     except Exception as e:
-        click.echo(f"Error loading config: {e}", err=True)
+        click.echo(_format_error(f"Error loading config: {e}"), err=True)
         sys.exit(1)
 
 
@@ -1617,7 +1753,7 @@ def config_validate(ctx: click.Context) -> None:
     try:
         settings = Settings()
     except Exception as e:
-        click.echo(f"CONFIGURATION ERROR: {e}", err=True)
+        click.echo(_format_error(f"CONFIGURATION ERROR: {e}"), err=True)
         sys.exit(1)
 
     # Validate engines
@@ -1698,7 +1834,7 @@ def version() -> None:
 
 # ── checkpoints command ──────────────────────────────────
 
-@cli.group()
+@cli.group(hidden=True)
 def checkpoints() -> None:
     """管理断点续爬的检查点。"""
     pass
