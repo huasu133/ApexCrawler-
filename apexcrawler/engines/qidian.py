@@ -464,7 +464,7 @@ class QidianEngine(BaseEngine):
             ) from e
 
         engine = CloakedV2Engine(
-            headless=self.headless,
+            headless=False,  # 腾讯云WAF需非headless模式才能通过probe.js检测
             viewport={"width": 1920, "height": 1080},
         )
         try:
