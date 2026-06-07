@@ -360,6 +360,7 @@ class ExtractStage:
             ) as c:
                 r = await c.get(target_url)
                 ctx._last_status = r.status_code
+                ctx._last_headers = dict(r.headers)
                 r.raise_for_status()
                 html = r.text
 

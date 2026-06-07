@@ -46,9 +46,8 @@ def _format_error(message: str) -> str:
     """Format error messages with actionable fixes."""
     import re
     patterns = [
-        (r"No module named '(\w+)'", r"Missing dependency: \1\n  Fix: pip install \1"),
-        (r"ModuleNotFoundError: No module named '(\w+)'", r"Missing dependency: \1\n  Fix: pip install \1"),
-        (r"pip install", r"\g<0>"),
+        (r"No module named '([^']+)'", r"Missing dependency: \1\n  Fix: pip install \1"),
+        (r"ModuleNotFoundError: No module named '([^']+)'", r"Missing dependency: \1\n  Fix: pip install \1"),
     ]
     for pattern, replacement in patterns:
         if re.search(pattern, message, re.I):
@@ -1476,8 +1475,8 @@ def view_cmd(ctx: click.Context, url: str, engine: str, output: str) -> None:
                 await b.close()
                 click.echo(f"Title: {title}")
                 click.echo(f"Screenshot: {os.path.abspath(save_path)}")
-            except ImportError:
-                click.echo("CloakBrowser not installed. Install: pip install cloakbrowser", err=True)
+            except Exception as e:
+                click.echo(_format_error(f"Browser error: {e}"), err=True)
                 raise click.Abort()
         else:
             try:
