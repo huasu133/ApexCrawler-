@@ -125,13 +125,22 @@ class CloakedV2Engine(BaseEngine):
 
     async def close(self) -> None:
         if self._page:
-            await self._page.close()
+            try:
+                await self._page.close()
+            except Exception as e:
+                logger.debug(f"cloaked_v2 close page error: {e}")
             self._page = None
         if self._context:
-            await self._context.close()
+            try:
+                await self._context.close()
+            except Exception as e:
+                logger.debug(f"cloaked_v2 close context error: {e}")
             self._context = None
         if self._browser:
-            await self._browser.close()
+            try:
+                await self._browser.close()
+            except Exception as e:
+                logger.debug(f"cloaked_v2 close browser error: {e}")
             self._browser = None
 
     async def health_check(self) -> bool:

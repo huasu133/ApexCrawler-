@@ -1,7 +1,7 @@
 """Novel crawling framework — multi-site unified novel downloader."""
 
 # 导入适配器模块，触发 @register_adapter 装饰器注册
-from apexcrawler.novel import qidian_adapter  # noqa: F401
+from apexcrawler.novel import adapter_qidian  # noqa: F401
 from apexcrawler.novel import adapter_17k      # noqa: F401
 from apexcrawler.novel import adapter_biquge   # noqa: F401
 

@@ -13,6 +13,15 @@ from apexcrawler.routing.registry import EngineRegistry
 logger = logging.getLogger(__name__)
 
 
+async def _safe_execute_cdp(tab, cmd: str, params: dict | None = None):
+    """Safely execute CDP command with fallback for missing _execute_cdp."""
+    try:
+        return await tab._execute_cdp(cmd, params or {})
+    except AttributeError:
+        logger.warning("PyDoll 版本不兼容，execute_cdp 失败 (cmd=%s)", cmd)
+        return None
+
+
 @EngineRegistry.register
 class PyDollEngine(BaseEngine):
     """CDP-native stealth browser engine using PyDoll.
@@ -69,7 +78,7 @@ class PyDollEngine(BaseEngine):
         from apexcrawler.fingerprint.consistency import get_profile
 
         profile = get_profile()
-        await self._tab._execute_cdp("Page.addScriptToEvaluateOnNewDocument", {
+        await _safe_execute_cdp(self._tab, "Page.addScriptToEvaluateOnNewDocument", {
             "source": profile.cdp_inject_script(),
         })
 
@@ -93,7 +102,7 @@ class PyDollEngine(BaseEngine):
         from apexcrawler.fingerprint.consistency import get_profile
 
         profile = get_profile()
-        await self._tab._execute_cdp("Page.addScriptToEvaluateOnNewDocument", {
+        await _safe_execute_cdp(self._tab, "Page.addScriptToEvaluateOnNewDocument", {
             "source": profile.cdp_inject_script(),
         })
 
@@ -136,23 +145,23 @@ class _PageAdapter:
     @property
     def content(self):
         """Return coroutine for page HTML (property-style)."""
-        return self._tab._execute_cdp("Runtime.evaluate", {
+        return _safe_execute_cdp(self._tab, "Runtime.evaluate", {
             "expression": "document.documentElement.outerHTML",
             "returnByValue": True,
         })
 
     async def evaluate(self, script: str):
-        return await self._tab._execute_cdp("Runtime.evaluate", {
+        return await _safe_execute_cdp(self._tab, "Runtime.evaluate", {
             "expression": script,
             "returnByValue": True,
         })
 
     async def screenshot(self, *, full_page: bool = False) -> bytes:
-        result = await self._tab._execute_cdp(
-            "Page.captureScreenshot", {"format": "png"}
+        result = await _safe_execute_cdp(
+            self._tab, "Page.captureScreenshot", {"format": "png"}
         )
         import base64
         return base64.b64decode(result.get("data", ""))
 
     async def close(self):
-        await self._tab._execute_cdp("Page.close", {})
+        await _safe_execute_cdp(self._tab, "Page.close", {})

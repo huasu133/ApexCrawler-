@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Optional
@@ -40,29 +41,31 @@ class SelectorDatabase:
             os.makedirs(db_dir, exist_ok=True)
             db_path = os.path.join(db_dir, "selector_cache.db")
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._write_lock = threading.Lock()
         self._init_db()
 
     def _init_db(self):
-        self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS selectors (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                url_pattern TEXT NOT NULL,
-                field_name TEXT NOT NULL,
-                selector TEXT NOT NULL,
-                selector_type TEXT DEFAULT 'css',
-                confidence REAL DEFAULT 0.5,
-                success_count INTEGER DEFAULT 0,
-                fail_count INTEGER DEFAULT 0,
-                last_used_at REAL DEFAULT 0,
-                created_at REAL DEFAULT 0,
-                UNIQUE(url_pattern, field_name, selector)
-            )
-        """)
-        self._conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_url_field
-            ON selectors(url_pattern, field_name)
-        """)
-        self._conn.commit()
+        with self._write_lock:
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS selectors (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    url_pattern TEXT NOT NULL,
+                    field_name TEXT NOT NULL,
+                    selector TEXT NOT NULL,
+                    selector_type TEXT DEFAULT 'css',
+                    confidence REAL DEFAULT 0.5,
+                    success_count INTEGER DEFAULT 0,
+                    fail_count INTEGER DEFAULT 0,
+                    last_used_at REAL DEFAULT 0,
+                    created_at REAL DEFAULT 0,
+                    UNIQUE(url_pattern, field_name, selector)
+                )
+            """)
+            self._conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_url_field
+                ON selectors(url_pattern, field_name)
+            """)
+            self._conn.commit()
 
     def get_candidates(self, url: str, field: str) -> list[tuple[str, float]]:
         """Get selectors sorted by confidence descending."""
@@ -77,47 +80,50 @@ class SelectorDatabase:
 
     def record_success(self, url: str, field: str, selector: str):
         """Increase confidence on success."""
-        pattern = urlparse(url).netloc
-        ts = __import__("time").time()
-        self._conn.execute(
-            """
-            INSERT INTO selectors (url_pattern, field_name, selector, confidence, success_count, last_used_at, created_at)
-            VALUES (?, ?, ?, 0.5, 1, ?, ?)
-            ON CONFLICT(url_pattern, field_name, selector) DO UPDATE SET
-                confidence = MIN(1.0, confidence * 1.05 + 0.02),
-                success_count = success_count + 1,
-                last_used_at = ?
-        """,
-            (pattern, field, selector, ts, ts, ts),
-        )
-        self._conn.commit()
+        with self._write_lock:
+            pattern = urlparse(url).netloc
+            ts = __import__("time").time()
+            self._conn.execute(
+                """
+                INSERT INTO selectors (url_pattern, field_name, selector, confidence, success_count, last_used_at, created_at)
+                VALUES (?, ?, ?, 0.5, 1, ?, ?)
+                ON CONFLICT(url_pattern, field_name, selector) DO UPDATE SET
+                    confidence = MIN(1.0, confidence * 1.05 + 0.02),
+                    success_count = success_count + 1,
+                    last_used_at = ?
+            """,
+                (pattern, field, selector, ts, ts, ts),
+            )
+            self._conn.commit()
 
     def record_failure(self, url: str, field: str, selector: str):
         """Decrease confidence on failure."""
-        pattern = urlparse(url).netloc
-        self._conn.execute(
-            """
-            UPDATE selectors SET
-                confidence = MAX(0.0, confidence * 0.85 - 0.05),
-                fail_count = fail_count + 1,
-                last_used_at = ?
-            WHERE url_pattern = ? AND field_name = ? AND selector = ?
-        """,
-            (__import__("time").time(), pattern, field, selector),
-        )
-        self._conn.commit()
+        with self._write_lock:
+            pattern = urlparse(url).netloc
+            self._conn.execute(
+                """
+                UPDATE selectors SET
+                    confidence = MAX(0.0, confidence * 0.85 - 0.05),
+                    fail_count = fail_count + 1,
+                    last_used_at = ?
+                WHERE url_pattern = ? AND field_name = ? AND selector = ?
+            """,
+                (__import__("time").time(), pattern, field, selector),
+            )
+            self._conn.commit()
 
     def decay_old_selectors(self, days: int = 7):
         """Decay confidence for selectors unused for N days."""
-        cutoff = __import__("time").time() - days * 86400
-        self._conn.execute(
-            """
-            UPDATE selectors SET confidence = confidence * 0.99
-            WHERE last_used_at < ? AND last_used_at > 0
-        """,
-            (cutoff,),
-        )
-        self._conn.commit()
+        with self._write_lock:
+            cutoff = __import__("time").time() - days * 86400
+            self._conn.execute(
+                """
+                UPDATE selectors SET confidence = confidence * 0.99
+                WHERE last_used_at < ? AND last_used_at > 0
+            """,
+                (cutoff,),
+            )
+            self._conn.commit()
 
     def close(self):
         self._conn.close()

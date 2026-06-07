@@ -56,6 +56,39 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _run_async(coro):
+    """Safely run a coroutine from a sync context.
+
+    如果已有事件循环在运行（如在 Jupyter/异步上下文中），
+    创建新的事件循环策略来避免 RuntimeError。
+    """
+    try:
+        loop = asyncio.get_running_loop()
+        # 已有运行中的循环 → 创建新循环在新线程运行
+        import threading
+        result = []
+        error = []
+        def _run():
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            try:
+                r = new_loop.run_until_complete(coro)
+                result.append(r)
+            except Exception as e:
+                error.append(e)
+            finally:
+                new_loop.close()
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join()
+        if error:
+            raise error[0]
+        return result[0]
+    except RuntimeError:
+        # 没有运行中的循环 → 正常使用 asyncio.run
+        return asyncio.run(coro)
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 数据模型
 # ══════════════════════════════════════════════════════════════════════
@@ -300,7 +333,7 @@ class QidianEngine(BaseEngine):
 
         返回导出的 Cookie 对象，可用于后续请求。
         """
-        return asyncio.run(self.login_async())
+        return _run_async(self.login_async())
 
     async def login_async(self) -> QidianCookie:
         """
@@ -374,7 +407,7 @@ class QidianEngine(BaseEngine):
         """
         同步方式：启动有头浏览器过 WAF，返回已验证的 Cookie 列表。
         """
-        return asyncio.run(self.bypass_waf_async(url))
+        return _run_async(self.bypass_waf_async(url))
 
     async def bypass_waf_async(
         self, url: Optional[str] = None
@@ -451,7 +484,7 @@ class QidianEngine(BaseEngine):
         Returns:
             dict[str, str]: Cookie name→value 字典
         """
-        cookies_list, page_html, chapters_data = asyncio.run(
+        cookies_list, page_html, chapters_data = _run_async(
             self._bypass_waf_and_fetch_cookies_async(book_id=book_id)
         )
         self._page_html = page_html
@@ -859,8 +892,7 @@ class QidianEngine(BaseEngine):
             # 使用 CloakBrowser 渲染章节页面
             try:
                 import cloakbrowser
-                import asyncio
-                browser_html = asyncio.run(self._fetch_chapter_via_browser(url))
+                browser_html = _run_async(self._fetch_chapter_via_browser(url))
                 if browser_html:
                     text, metadata = self._extract_full(browser_html)
                     chapter_info.content = text
@@ -910,14 +942,17 @@ class QidianEngine(BaseEngine):
         """
         # WAF 拦截 curl_cffi → 直接使用浏览器批量渲染
         if len(chapters) > 1:
-            return asyncio.run(self._batch_fetch_via_browser(chapters))
+            return _run_async(self._batch_fetch_via_browser(chapters))
 
         # 单章走常规路径
-        for ch in chapters:
-            if not ch.is_vip:
-                result = self.fetch_chapter(ch)
-                return [result]
-        return chapters
+        if len(chapters) <= 1:
+            results = []
+            for ch in chapters:
+                if not ch.is_vip:
+                    results.append(self.fetch_chapter(ch))
+                else:
+                    results.append(ch)
+            return results
 
     async def _batch_fetch_via_browser(self, chapters: List[Chapter]) -> List[Chapter]:
         """

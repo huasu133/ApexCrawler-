@@ -20,6 +20,8 @@ from ..http.tls_router import TLSRouter
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_CACHE_DIR = os.path.expanduser("~/.apexcrawler/page_cache")
+
 
 class ScheduleStage:
     """Validates the target URL and enforces human-like scheduling delays.
@@ -44,7 +46,6 @@ class ScheduleStage:
                 f"[schedule] trace={ctx.trace_id} computed_delay={delay:.2f}s"
                 f" url={ctx.target_url}"
             )
-            import asyncio
             await asyncio.sleep(delay)
         else:
             logger.debug(f"[schedule] trace={ctx.trace_id} url={ctx.target_url}")
@@ -343,11 +344,12 @@ class ExtractStage:
             # DNS cache: resolve host to IP for faster connection (HTTP only; HTTPS needs hostname for SSL)
             parsed = urlparse(target_url)
             host = parsed.netloc.split(":")[0]
-            resolved_ip = dns_cache.resolve(host)
-            if resolved_ip != host and parsed.scheme == "http":
-                netloc = parsed.netloc.replace(host, resolved_ip)
-                target_url = urlunparse(parsed._replace(netloc=netloc))
-                headers["Host"] = host
+            if parsed.scheme == "http":
+                resolved_ip = dns_cache.resolve(host)
+                if resolved_ip != host:
+                    netloc = parsed.netloc.replace(host, resolved_ip)
+                    target_url = urlunparse(parsed._replace(netloc=netloc))
+                    headers["Host"] = host
 
             # Connection reuse: obtain proxy URL from ConnectionReuseManager
             proxy = None
@@ -431,32 +433,80 @@ class ExtractStage:
             return None
 
     async def _try_crawl4ai(self, ctx: PipelineContext) -> None:
-        """Enhance extracted content using Crawl4AI's content filtering.
+        """Enhance extracted content using Crawl4AI's capabilities.
 
-        Uses Crawl4AI's PruningContentFilter to strip navigation, ads,
-        and boilerplate, producing cleaner markdown. Stores the result
-        in ctx.raw_crawl4ai and may raise confidence if content improves.
+        Two modes:
+        1. LLM Extraction — if ctx has llm_provider set, use
+           LLMExtractionStrategy with schema/instruction.
+        2. Content Filtering — default: use PruningContentFilter
+           (or BM25ContentFilter if content_filter_query is set)
+           to produce cleaner markdown.
         """
         if not ctx.raw_html or len(ctx.raw_html) < 500:
             return
 
+        # ── Mode 1: LLM Extraction ──
+        if ctx.llm_provider:
+            try:
+                from apexcrawler.extraction.llm_extract import (
+                    extract_with_llm, LLMConfig,
+                )
+            except ImportError:
+                logger.debug("[extract] llm_extract module not available")
+                return
+
+            llm_config = LLMConfig(
+                provider=ctx.llm_provider,
+                api_token=ctx.llm_api_token,
+                instruction=ctx.llm_instruction,
+                input_format="markdown",
+            )
+            if ctx.llm_schema_json:
+                try:
+                    import json
+                    llm_config.schema = json.loads(ctx.llm_schema_json)
+                except json.JSONDecodeError:
+                    logger.warning(f"[extract] invalid llm schema: {ctx.llm_schema_json[:80]}")
+
+            result = extract_with_llm(ctx.raw_html, llm_config)
+            if result.get("success"):
+                ctx.extracted_data = result["data"]
+                ctx.extraction_confidence = 0.9  # LLM extraction is highly reliable
+                if isinstance(result["data"], str):
+                    ctx.raw_crawl4ai = result["data"]
+                logger.info(
+                    "[extract] LLM extraction succeeded, "
+                    f"confidence={ctx.extraction_confidence}"
+                )
+            else:
+                logger.warning(f"[extract] LLM extraction failed: {result.get('error')}")
+            return  # LLM extraction replaces content filtering
+
+        # ── Mode 2: Content Filtering (default) ──
+        if ctx.extraction_confidence >= 0.85:
+            return
+
         try:
-            from crawl4ai.content_filter_strategy import PruningContentFilter
+            from crawl4ai.content_filter_strategy import (
+                PruningContentFilter, BM25ContentFilter,
+            )
             from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
         except ImportError:
             logger.debug("[extract] crawl4ai not available, skipping enhancement")
             return
 
-        # Only enhance if confidence is moderate (structured data already handled)
-        if ctx.extraction_confidence >= 0.85:
-            return
+        # Select filter type
+        if ctx.content_filter_query:
+            filter_ = BM25ContentFilter(
+                user_query=ctx.content_filter_query,
+                bm25_threshold=1.0,
+            )
+        else:
+            filter_ = PruningContentFilter(threshold=0.48, threshold_type="fixed")
 
-        # Generate clean markdown with PruningContentFilter
-        filter_ = PruningContentFilter(threshold=0.48, threshold_type="fixed")
         md_generator = DefaultMarkdownGenerator(content_filter=filter_)
         result = md_generator.generate_markdown(ctx.raw_html)
 
-        # Prefer fit_markdown (filtered), fall back to raw_markdown
         clean_md = ""
         if hasattr(result, "fit_markdown") and result.fit_markdown:
             clean_md = result.fit_markdown
@@ -465,18 +515,14 @@ class ExtractStage:
 
         if clean_md and len(clean_md) > 50:
             ctx.raw_crawl4ai = clean_md
-            # Raise confidence if crawl4ai produced meaningful improvements
             original_len = len(ctx.raw_html)
             ratio = len(clean_md) / max(original_len, 1)
             logger.debug(
                 f"[extract] crawl4ai: {original_len}B HTML → {len(clean_md)}B md "
                 f"(ratio={ratio:.2f})"
             )
-            # If content was significantly cleaned (ratio indicates noise removal)
             if ratio < 0.8 and len(clean_md) > 100:
                 ctx.extraction_confidence = max(ctx.extraction_confidence or 0, 0.75)
-        else:
-            logger.debug("[extract] crawl4ai: no meaningful content produced")
 
     def _extract_structured_data(self, html: str) -> dict | None:
         """Extract JSON-LD, Open Graph, and Microdata from HTML.
@@ -581,10 +627,11 @@ class ValidateStage:
                 f"[validate] trace={ctx.trace_id} validation errors: {ctx.validation_errors}"
             )
 
-        # Clean extracted data after validation (regardless of schema validation result)
-        from ..extraction.cleaner import clean_record
-        ctx.cleaned_data = clean_record(ctx.extracted_data)
-        logger.debug(f"[validate] clean_record applied, cleaned_data keys={list(ctx.cleaned_data.keys())}")
+        # Clean extracted data only if validation passed
+        if ctx.validation_passed and ctx.extracted_data:
+            from ..extraction.cleaner import clean_record
+            ctx.cleaned_data = clean_record(ctx.extracted_data)
+            logger.debug(f"[validate] clean_record applied, cleaned_data keys={list(ctx.cleaned_data.keys())}")
 
         return ctx
 
@@ -606,7 +653,7 @@ class StoreStage:
     name = "store"
 
     def __init__(self, cache_dir: str | None = None):
-        self._cache_dir = cache_dir or os.path.expanduser("~/.apexcrawler/page_cache")
+        self._cache_dir = cache_dir or _DEFAULT_CACHE_DIR
         os.makedirs(self._cache_dir, exist_ok=True)
 
     def _get_cache_path(self, url: str) -> Path:
@@ -645,7 +692,7 @@ class StoreStage:
     def _save_to_cache(self, url: str, html: str, headers: dict):
         """Save page to cache with ETag/Last-Modified metadata."""
         cache_path = self._get_cache_path(url)
-        content_hash = hashlib.md5(html.encode()).hexdigest()
+        content_hash = hashlib.sha256(html.encode()).hexdigest()
 
         cache_data = {
             "url": url,

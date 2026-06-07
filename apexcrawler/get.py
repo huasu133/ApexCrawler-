@@ -8,6 +8,7 @@ Usage:
 """
 from __future__ import annotations
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,6 @@ def get(url: str, engine: str = "", proxy: str = "", timeout: int = 30,
                 logger.warning("HTTP %s for %s", status, url)
 
             if output == "text" and text:
-                import re
                 # Remove script and style content first (may contain non-text)
                 text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL | re.IGNORECASE)
                 text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)

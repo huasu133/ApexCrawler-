@@ -9,10 +9,40 @@ from apexcrawler.novel.engine import register_adapter
 
 logger = logging.getLogger(__name__)
 
+
+def _run_async_safe(coro):
+    """Safely run a coroutine from sync context, even if loop is running."""
+    try:
+        loop = asyncio.get_running_loop()
+        import threading
+        result = []
+        error = []
+
+        def _run():
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            try:
+                r = new_loop.run_until_complete(coro)
+                result.append(r)
+            except Exception as e:
+                error.append(e)
+            finally:
+                new_loop.close()
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join()
+        if error:
+            raise error[0]
+        return result[0]
+    except RuntimeError:
+        return asyncio.run(coro)
+
+
 try:
     import requests
 except ImportError:
-    requests = None
+    requests = None  # 报错信息在 session 属性中处理
 
 try:
     from bs4 import BeautifulSoup
@@ -36,8 +66,7 @@ class BiqugeAdapter(SiteAdapter):
         "biquge", "bqg", "xbiquge", "biqugetv", "biqugeio",
         "biqugeinfo", "biqugezw", "biqugeabc", "biqugebu",
         "biquge5200", "biquge6", "biquge7", "biqugewu",
-        "biquge7", "biqugewin", "biqugenet", "biqugeco",
-        "xbiquge", "biqugecn",
+        "biqugewin", "biqugenet", "biqugeco", "biqugecn",
     ]
 
     URL_PATTERNS = [
@@ -88,21 +117,6 @@ class BiqugeAdapter(SiteAdapter):
         if self._base_url and not self._base_url.endswith("/"):
             return self._base_url + "/" + href
         return self._base_url + href
-
-    @property
-    def session(self):
-        if self._session is None:
-            if requests is None:
-                raise ImportError("Missing dependency: requests → pip install requests")
-            self._session = requests.Session()
-            self._session.headers.update({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            })
-            # 绕过系统代理直连
-            self._session.trust_env = False
-        return self._session
 
     def match(self, url: str) -> bool:
         return any(re.search(p, url) for p in self._patterns)
@@ -166,6 +180,7 @@ class BiqugeAdapter(SiteAdapter):
                 chapter_links = soup.select('a[href*="chapter"]')
                 if not chapter_links or len(chapter_links) < 3:
                     chapter_links = soup.select('a[href*=".html"]')
+                    chapter_links = [a for a in chapter_links if re.search(r'\d+\.html', a.get('href', ''))]
 
         chapters = []
         seen = set()
@@ -212,7 +227,7 @@ class BiqugeAdapter(SiteAdapter):
 
         # Requests got dynamic page ("加载中..."), fall back to browser
         logger.info("章节页面为动态加载，降级到浏览器渲染: %s", url)
-        return asyncio.run(self._fetch_via_browser(url))
+        return _run_async_safe(self._fetch_via_browser(url))
 
     def _extract_content(self, soup: "BeautifulSoup") -> str:
         """Extract chapter content from BeautifulSoup object."""

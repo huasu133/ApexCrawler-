@@ -9,13 +9,41 @@ from apexcrawler.novel.engine import register_adapter
 logger = logging.getLogger(__name__)
 
 
+def _run_async_safe(coro):
+    """Safely run a coroutine from sync context, even if loop is running."""
+    try:
+        loop = asyncio.get_running_loop()
+        import threading
+        result = []
+        error = []
+
+        def _run():
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            try:
+                r = new_loop.run_until_complete(coro)
+                result.append(r)
+            except Exception as e:
+                error.append(e)
+            finally:
+                new_loop.close()
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join()
+        if error:
+            raise error[0]
+        return result[0]
+    except RuntimeError:
+        return asyncio.run(coro)
+
+
 @register_adapter
 class Novel17kAdapter(SiteAdapter):
     """Adapter for 17k.com using CloakBrowser to bypass Aliyun WAF."""
 
     URL_PATTERNS = [
-        r"www\.17k\.com/book/(\d+)",
-        r"17k\.com/book/(\d+)",
+        r"(?:www\.)?17k\.com/book/(\d+)",
     ]
 
     def __init__(self):
@@ -38,7 +66,7 @@ class Novel17kAdapter(SiteAdapter):
         if book_id in self._cache:
             return self._cache[book_id]
 
-        chapters = asyncio.run(self._fetch_chapter_list(book_id))
+        chapters = _run_async_safe(self._fetch_chapter_list(book_id))
         book = BookInfo(
             book_id=str(book_id),
             title=f"Book {book_id}",
@@ -99,7 +127,7 @@ class Novel17kAdapter(SiteAdapter):
             await browser.close()
 
     def fetch_chapter(self, chapter: Chapter) -> str:
-        return asyncio.run(self._fetch_chapter_text(chapter))
+        return _run_async_safe(self._fetch_chapter_text(chapter))
 
     async def _fetch_chapter_text(self, chapter: Chapter) -> str:
         import cloakbrowser

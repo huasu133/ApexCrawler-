@@ -25,6 +25,13 @@ class PipelineContext:
     extraction_schema: type | None = None
     priority: int = 0
 
+    # ── LLM / AI extraction config (set by CLI / API) ──
+    llm_provider: str = ""       # e.g. "openai/gpt-4o"
+    llm_api_token: str = ""      # API key (passed through, never stored)
+    llm_instruction: str = ""    # Natural language extraction instruction
+    llm_schema_json: str = ""    # JSON schema for structured extraction
+    content_filter_query: str = ""  # BM25 query for content filtering
+
     # ── Route stage outputs ──
     selected_engine: str = ""
     route_reason: str = ""
@@ -52,6 +59,11 @@ class PipelineContext:
 
     # ── Store stage outputs ──
     stored_id: str = ""
+
+    # ── Validate stage outputs cleaned data ──
+    cleaned_data: dict | None = None
+    _last_headers: dict = field(default_factory=dict)
+    incremental_hit: bool = False
 
     # ── Error tracking ──
     retry_count: int = 0

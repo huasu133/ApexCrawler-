@@ -21,6 +21,7 @@ import json
 import logging
 import socket
 import sys
+import uuid
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -159,6 +160,11 @@ def cli(ctx: click.Context, log_level: str, json_log: bool, quiet: bool, verbose
 @click.option("--verbose", is_flag=True, default=False, help="详细模式，显示调试信息", hidden=True)
 @click.option("--resume", is_flag=True, default=False, help="从上次中断的检查点恢复爬取")
 @click.option("--checkpoint-dir", type=click.Path(), default=None, help="检查点存储目录")
+# LLM 提取选项
+@click.option("--llm", "-l", "llm_provider", default="", help="LLM 提供者 (如 openai/gpt-4o)，启用 AI 提取")
+@click.option("--instruction", "-i", "llm_instruction", default="", help="LLM 提取指令")
+@click.option("--llm-schema", "-j", "llm_schema", default="", help="LLM 结构化提取 JSON Schema")
+@click.option("--filter", "-f", "filter_query", default="", help="BM25 内容过滤关键词")
 @click.pass_context
 def crawl(
     ctx: click.Context,
@@ -178,6 +184,10 @@ def crawl(
     verbose: bool,
     resume: bool,
     checkpoint_dir: Optional[str],
+    llm_provider: str,
+    llm_instruction: str,
+    llm_schema: str,
+    filter_query: str,
 ) -> None:
     """爬取单个 URL 或批量 URL。
 
@@ -283,6 +293,10 @@ def crawl(
                 ctx_obj = PipelineContext(
                     target_url=target_url,
                     extraction_schema=schema,
+                    llm_provider=llm_provider,
+                    llm_instruction=llm_instruction,
+                    llm_schema_json=llm_schema,
+                    content_filter_query=filter_query,
                 )
 
                 # Engine selection: CLI arg > fast mode default
@@ -314,7 +328,6 @@ def crawl(
                     EvadeStage(router=tls_router, proxies=proxies),
                     ExtractStage(
                         engine_factory=engine_pool,
-                        conn_manager=None,
                     ),
                     FontDecodeStage(),
                     ValidateStage(),
@@ -713,7 +726,7 @@ def ask(ctx: click.Context, query: str, output: str | None, live: bool) -> None:
     async def _run():
         from ..core.context import PipelineContext
 
-        ctx_obj = PipelineContext(target_url=url, trace_id="ask_" + url.split("/")[2])
+        ctx_obj = PipelineContext(target_url=url, trace_id="ask_" + uuid.uuid4().hex[:12])
 
         # Build extraction hints
         hints = {
@@ -792,7 +805,6 @@ def ask(ctx: click.Context, query: str, output: str | None, live: bool) -> None:
             EvadeStage(router=tls_router),
             ExtractStage(
                 engine_factory=engine_pool,
-                conn_manager=None,
             ),
             FontDecodeStage(),
             ValidateStage(),
@@ -1426,8 +1438,14 @@ document.getElementById('query').addEventListener('keydown', e => {
 @click.option("--proxy", "-p", default="", help="代理地址")
 @click.option("--timeout", "-t", type=int, default=30, help="超时秒数")
 @click.option("--output", "-o", type=click.Choice(["html", "text"]), default="html", help="输出格式")
+@click.option("--llm", "-l", default="", help="LLM 提供者 (如 openai/gpt-4o)")
+@click.option("--instruction", "-i", default="", help="LLM 提取指令")
+@click.option("--schema", "-s", default="", help="结构化提取 JSON Schema")
+@click.option("--filter", "-f", "filter_q", default="", help="内容过滤关键词 (BM25)")
 @click.pass_context
-def get_cmd(ctx: click.Context, url: str, engine: str, proxy: str, timeout: int, output: str) -> None:
+def get_cmd(ctx: click.Context, url: str, engine: str, proxy: str,
+            timeout: int, output: str, llm: str, instruction: str,
+            schema: str, filter_q: str) -> None:
     """快速获取页面内容。完全静默，只输出内容，不输出日志和元数据。
 
     示例:
@@ -1436,6 +1454,7 @@ def get_cmd(ctx: click.Context, url: str, engine: str, proxy: str, timeout: int,
         apex get https://example.com -o text
     """
     import re
+    _validate_url(url)
     # Detect novel platform URLs (Qidian, Fanqie, etc.)
     novel_domains = ["qidian.com", "fanqienovel.com", "jinjiang.com", "biquge", "69shu"]
     if any(d in url for d in novel_domains):
@@ -1459,7 +1478,49 @@ def get_cmd(ctx: click.Context, url: str, engine: str, proxy: str, timeout: int,
     try:
         from apexcrawler.get import get
         content = get(url, engine=engine, proxy=proxy, timeout=timeout, output=output)
-        click.echo(content, nl=False)
+
+        # LLM extraction after getting content
+        if llm and content:
+            try:
+                from apexcrawler.extraction.llm_extract import (
+                    LLMConfig, extract_with_llm,
+                )
+                import os as _os
+                api_token = _os.environ.get("OPENAI_API_KEY", "")
+                if not api_token:
+                    click.echo("\n# Warning: OPENAI_API_KEY not set, LLM extraction may fail", err=True)
+                config = LLMConfig(
+                    provider=llm,
+                    api_token=api_token,
+                    instruction=instruction,
+                )
+                if schema:
+                    import json
+                    config.schema = json.loads(schema)
+                result = extract_with_llm(content, config)
+                if result.get("success"):
+                    import json as _json
+                    click.echo("\n" + _json.dumps(result["data"], ensure_ascii=False, indent=2))
+                else:
+                    click.echo(f"\n# LLM extraction failed: {result.get('error')}", err=True)
+            except Exception as e:
+                click.echo(f"\n# LLM extraction error: {e}", err=True)
+
+        # Content filtering after getting content
+        if filter_q and content and not llm:
+            try:
+                from apexcrawler.extraction.llm_extract import (
+                    ContentFilterConfig, filter_content,
+                )
+                cfg = ContentFilterConfig(filter_type="bm25", user_query=filter_q)
+                filtered = filter_content(content, cfg)
+                if filtered:
+                    click.echo(f"\n# Filtered (query: {filter_q}):\n" + filtered)
+            except Exception as e:
+                click.echo(f"\n# Content filter error: {e}", err=True)
+
+        if not llm and not filter_q:
+            click.echo(content, nl=False)
     except Exception as e:
         click.echo(_format_error(f"Error: {e}"), err=True)
         raise click.Abort()
@@ -1480,6 +1541,7 @@ def view_cmd(ctx: click.Context, url: str, engine: str, output: str) -> None:
         apex view https://example.com
         apex view https://example.com --engine cloaked_v2
     """
+    _validate_url(url)
     import asyncio
     import os
 
@@ -1536,6 +1598,7 @@ def save_cmd(ctx: click.Context, url: str, output: str, engine: str, fmt: str) -
         apex save https://example.com -o page.html
         apex save https://example.com --format text
     """
+    _validate_url(url)
     import os
     from urllib.parse import urlparse
 
@@ -1927,6 +1990,7 @@ def novel_info(url: str) -> None:
         https://fanqienovel.com/...
     """
     try:
+        _validate_url(url)
         ne = NovelEngine()
         book = ne.info(url)
         free = sum(1 for c in book.chapters if not c.is_vip)
@@ -1957,6 +2021,7 @@ def novel_download(url: str, chapters: str, output: str, fmt: str) -> None:
         apex novel download https://book.qidian.com/info/107580 -o 凡人修仙传.txt
     """
     try:
+        _validate_url(url)
         start, end = 1, 0
         if chapters:
             parts = chapters.split("-")
