@@ -106,6 +106,7 @@ def cli(ctx: click.Context, log_level: str, json_log: bool) -> None:
 @click.option("--timeout", "-t", type=click.IntRange(min=1), default=30, help="请求超时时间（秒）")
 @click.option("--retries", "-r", type=click.IntRange(min=1), default=3, help="最大重试次数")
 @click.option("--fast", is_flag=True, default=False, help="跳过人类行为模拟延迟（更快但更容易被检测）")
+@click.option("--show", is_flag=True, default=False, help="直接显示页面内容（代替 JSON 输出）")
 @click.option("--resume", is_flag=True, default=False, help="从上次中断的检查点恢复爬取")
 @click.option("--checkpoint-dir", type=click.Path(), default=None, help="检查点存储目录")
 @click.pass_context
@@ -121,6 +122,7 @@ def crawl(
     timeout: int,
     retries: int,
     fast: bool,
+    show: bool,
     resume: bool,
     checkpoint_dir: Optional[str],
 ) -> None:
@@ -328,6 +330,9 @@ def crawl(
                     "stored_id": result.stored_id,
                     "errors": result.validation_errors,
                 })
+                # Store raw HTML for --show mode
+                if show:
+                    results[-1]["raw_html"] = result.raw_html or ""
 
             except ValueError as e:
                 click.echo(f"  [SSRF blocked] {e}", err=True)
@@ -337,7 +342,15 @@ def crawl(
                 results.append({"url": target_url, "error": str(e)})
 
         # Output
-        if output_file:
+        if show and results:
+            # --show mode: output page content directly
+            for r in results:
+                html = r.get("raw_html", r.get("html", ""))
+                if html:
+                    click.echo(html[:10000])
+                elif "error" in r:
+                    click.echo(f"Error: {r['error']}")
+        elif output_file:
             output_path = Path(output_file)
             output_path.write_text(json.dumps(results, indent=2, ensure_ascii=False))
             click.echo(f"\nResults written to: {output_path}")
