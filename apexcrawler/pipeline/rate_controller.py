@@ -64,9 +64,9 @@ class RateController:
         async with self._lock:
             elapsed = time.monotonic() - self._last_request
             self._last_request = time.monotonic()
+            self._maybe_recover()
         if elapsed < interval:
             await asyncio.sleep(interval - elapsed)
-        self._maybe_recover()
 
     def signal(self, status: int = 0, html: str = ""):
         """根据响应信号调整速率等级。
@@ -106,9 +106,9 @@ class RateController:
         async with self._lock:
             elapsed = time.monotonic() - self._last_request
             self._last_request = time.monotonic()
+            self._maybe_recover()
         if elapsed < interval:
             return max(0, interval - elapsed)
-        self._maybe_recover()
         return 0.0
 
     def _upgrade(self):

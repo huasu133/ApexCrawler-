@@ -118,7 +118,7 @@ async def handle_turnstile(page: "AsyncPage", timeout: int = 30000) -> bool:
             return True  # No challenge means success
         challenge_type = "non-interactive"
 
-    logger.info(f"Cloudflare challenge detected: type={challenge_type}")
+    logger.info("Cloudflare challenge detected: type=%s", challenge_type)
 
     # Handle non-interactive challenges (auto-resolve)
     if challenge_type == "non-interactive":

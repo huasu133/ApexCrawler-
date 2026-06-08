@@ -1,6 +1,8 @@
 """Adaptive recovery: automatically probe and recover from degraded states."""
 
-import asyncio, time, logging
+import asyncio
+import time
+import logging
 logger = logging.getLogger(__name__)
 
 class AdaptiveRecoveryManager:
@@ -37,11 +39,11 @@ class AdaptiveRecoveryManager:
             info["probes"] += 1
             response = await fetch_func(f"https://{domain}")
             if response and len(response) > 500:
-                logger.info(f"Recovery probe [{domain}] success")
+                logger.info("Recovery probe [%s] success", domain)
                 del self._degraded[domain]
                 return True
         except Exception as e:
-            logger.debug(f"Recovery probe [{domain}] failed: {e}")
+            logger.debug("Recovery probe [%s] failed: %s", domain, e)
         return False
     
     def is_degraded(self, domain: str) -> bool:

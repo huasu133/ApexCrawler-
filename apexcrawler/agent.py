@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import socket
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -183,14 +184,21 @@ def _is_safe_url(url: str) -> bool:
         import ipaddress
         host = parsed.hostname or ""
         # 过滤 localhost 和内网地址
-        if host in ("localhost", "127.0.0.1", "0.0.0.0"):
+        if host in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
             return False
         try:
             addr = ipaddress.ip_address(host)
             if addr.is_private or addr.is_loopback or addr.is_link_local:
                 return False
         except ValueError:
-            pass  # 域名，不阻止
+            # 域名 — 解析到 IP 后检查是否内网
+            try:
+                resolved = socket.gethostbyname(host)
+                addr = ipaddress.ip_address(resolved)
+                if addr.is_private or addr.is_loopback or addr.is_link_local:
+                    return False
+            except (socket.gaierror, ValueError):
+                pass  # 无法解析，放行（后续请求会失败）
         return True
     except Exception:
         return False

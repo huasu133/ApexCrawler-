@@ -163,7 +163,7 @@ class CamoufoxEngine(BaseEngine):
         }
         if self._executable:
             launch_args["executable_path"] = self._executable
-            logger.info(f"CamoufoxEngine using Camoufox binary: {self._executable}")
+            logger.info("CamoufoxEngine using Camoufox binary: %s", self._executable)
 
         self._browser = await self._pw.firefox.launch(**launch_args)
 
@@ -209,7 +209,7 @@ class CamoufoxEngine(BaseEngine):
                 from apexcrawler.engines.turnstile_handler import handle_turnstile
                 await handle_turnstile(self._page, timeout=30000)
             except Exception as e:
-                logger.warning(f"Turnstile handling failed: {e}")
+                logger.warning("Turnstile handling failed: %s", e)
 
         return _PageAdapter(self._page)
 

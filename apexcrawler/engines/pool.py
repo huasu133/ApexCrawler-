@@ -237,9 +237,16 @@ class EnginePool:
         # Extract the user agent from the engine's page context
         user_agent = ""
         try:
-            user_agent = await engine_instance._page.evaluate("navigator.userAgent")
+            if hasattr(engine_instance, '_page') and engine_instance._page:
+                user_agent = await engine_instance._page.evaluate("navigator.userAgent")
+            elif hasattr(engine_instance, '_context') and engine_instance._context:
+                page = await engine_instance._context.new_page()
+                user_agent = await page.evaluate("navigator.userAgent")
+                await page.close()
+            else:
+                user_agent = "Mozilla/5.0 (compatible; ApexCrawler)"
         except Exception:
-            pass
+            user_agent = "Mozilla/5.0 (compatible; ApexCrawler)"
 
         session = HybridSession(
             engine=engine_instance,

@@ -21,6 +21,8 @@ class CrossValidator:
         "meta": 1,
     }
 
+    _CLUSTER_THRESHOLD = 0.5
+
     async def validate(self, html: str, field: str, llm_value=None) -> dict:
         sources = {}
         sources["json_ld"] = self._from_jsonld(html, field)
@@ -42,7 +44,7 @@ class CrossValidator:
             placed = False
             for cluster in clusters:
                 cluster_val, cluster_vals, _cluster_weight = cluster
-                if self._jaccard_similarity(s, str(cluster_val)) > 0.5:
+                if self._jaccard_similarity(s, str(cluster_val)) > self._CLUSTER_THRESHOLD:
                     cluster_vals.append(s)
                     placed = True
                     break

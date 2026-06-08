@@ -51,14 +51,17 @@ def _validate_url(url: str) -> None:
         raise ValueError(f"Blocked host: {host}")
     try:
         addr = ipaddress.ip_address(host)
+    except ValueError:
+        # Not a literal IP — resolve via DNS
+        try:
+            resolved = socket.gethostbyname(host)
+            addr = ipaddress.ip_address(resolved)
+        except socket.gaierror:
+            return  # Cannot resolve — let the caller handle
+    else:
         for net in _BLOCKED_NETWORKS:
             if addr in net:
                 raise ValueError(f"Blocked IP: {host} (in {net})")
-    except ValueError:
-        if host:  # Re-raise our own ValueError only if host is non-empty
-            raise
-    except Exception:
-        pass
 
 # ══════════════════════════════════════════════════════════════════════
 # MCP Server
@@ -1102,6 +1105,42 @@ async def search_web_tool(query: str, num: int = 10) -> str:
     from apexcrawler.search import search_web
     results = await search_web(query=query, num=min(num, 20))
     return json.dumps([r.to_dict() for r in results], ensure_ascii=False)
+
+
+@server.tool(
+    name="inspect_url",
+    description="全面审查一个 URL（浏览器抓包 + 基础设施溯源）— 分类第三方资源、检测 CDN/统计/广告、分析 DNS/WHOIS/IP",
+)
+async def inspect_url_tool(url: str, headless: bool = True, timeout: int = 30) -> str:
+    """Perform a comprehensive security inspection of a target URL.
+
+    Uses CloakBrowser to render the page and intercept all network requests,
+    then categorizes third-party resources, detects CDNs, analytics, ads, and trackers.
+    Also performs infrastructure OSINT analysis (DNS, WHOIS, IP, SSL, CDN detection).
+
+    Args:
+        url: Target URL to inspect (e.g. "https://example.com")
+        headless: Whether to run the browser in headless mode (default True)
+        timeout: Browser navigation timeout in seconds (default 30)
+
+    Returns:
+        JSON string with the full inspection report
+    """
+    from apexcrawler.inspector import inspect_url
+
+    _validate_url(url)
+    report = await inspect_url(url, headless=headless, timeout=timeout)
+
+    def _to_dict(obj):
+        if hasattr(obj, '__dataclass_fields__'):
+            return {f: _to_dict(getattr(obj, f)) for f in obj.__dataclass_fields__}
+        if isinstance(obj, list):
+            return [_to_dict(i) for i in obj]
+        if isinstance(obj, dict):
+            return {k: _to_dict(v) for k, v in obj.items()}
+        return str(obj) if obj is not None else None
+
+    return json.dumps(_to_dict(report), ensure_ascii=False)
 
 
 # ══════════════════════════════════════════════════════════════════════

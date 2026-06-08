@@ -50,7 +50,7 @@ class ScheduleStage:
             )
             await asyncio.sleep(delay)
         else:
-            logger.debug(f"[schedule] trace={ctx.trace_id} url={ctx.target_url}")
+            logger.debug("[schedule] trace=%s url=%s", ctx.trace_id, ctx.target_url)
 
         return ctx
 
@@ -281,7 +281,7 @@ class ExtractStage:
             # Apply Cleaner post-extraction
             try:
                 ctx.raw_html = self._cleaner.clean(html)
-                logger.debug(f"[extract] cleaner applied, {len(ctx.raw_html)} bytes")
+                logger.debug("[extract] cleaner applied, %s bytes", len(ctx.raw_html))
             except Exception:
                 pass
 
@@ -290,7 +290,7 @@ class ExtractStage:
             try:
                 await self._try_crawl4ai(ctx)
             except Exception as e:
-                logger.debug(f"[extract] crawl4ai enhancement skipped: {e}")
+                logger.debug("[extract] crawl4ai enhancement skipped: %s", e)
 
             # Use higher confidence for API/JSON responses
             if self._api_detected:
@@ -316,10 +316,10 @@ class ExtractStage:
             if healed:
                 ctx.raw_html = healed
                 ctx.extraction_confidence = 0.4
-                logger.debug(f"[extract] sel_healer recovered content")
+                logger.debug("[extract] sel_healer recovered content")
                 return ctx
         except Exception as e:
-            logger.debug(f"[extract] sel_healer failed: {e}")
+            logger.debug("[extract] sel_healer failed: %s", e)
 
         raise ExtractionError(detail=f"Failed to fetch {ctx.target_url}")
 
@@ -374,7 +374,7 @@ class ExtractStage:
                 decompressed = decompress_brotli(raw)
                 if decompressed:
                     html = decompressed.decode("utf-8", errors="replace")
-                    logger.debug(f"[extract] brotli decompressed {len(raw)} → {len(html)} bytes")
+                    logger.debug("[extract] brotli decompressed %s → %s bytes", len(raw), len(html))
 
             # If we got JSON from a mobile API, use it directly — skip browser fallback
             if is_api:
@@ -413,11 +413,11 @@ class ExtractStage:
                         f"microdata={len([k for k in structured if k.startswith('md_')])})"
                     )
             except Exception as e:
-                logger.debug(f"[extract] structured data extraction skipped: {e}")
+                logger.debug("[extract] structured data extraction skipped: %s", e)
 
             return html
         except Exception as e:
-            logger.warning(f"[extract] HTTP failed: {e}")
+            logger.warning("[extract] HTTP failed: %s", e)
             return None
 
     async def _try_browser(self, ctx: PipelineContext) -> str | None:
@@ -426,11 +426,11 @@ class ExtractStage:
         try:
             async with self._engine_factory.acquire(ctx.selected_engine) as engine:
                 page = await engine.navigate(ctx.target_url, proxy=ctx.proxy or None)
-                html = await page.content
+                html = await page.content()
                 await page.close()
                 return html
         except Exception as e:
-            logger.warning(f"[extract] Browser failed: {e}")
+            logger.warning("[extract] Browser failed: %s", e)
             return None
 
     async def _try_crawl4ai(self, ctx: PipelineContext) -> None:
@@ -467,7 +467,7 @@ class ExtractStage:
                     import json
                     llm_config.schema = json.loads(ctx.llm_schema_json)
                 except json.JSONDecodeError:
-                    logger.warning(f"[extract] invalid llm schema: {ctx.llm_schema_json[:80]}")
+                    logger.warning("[extract] invalid llm schema: %s", ctx.llm_schema_json[:80])
 
             result = extract_with_llm(ctx.raw_html, llm_config)
             if result.get("success"):
@@ -480,7 +480,7 @@ class ExtractStage:
                     f"confidence={ctx.extraction_confidence}"
                 )
             else:
-                logger.warning(f"[extract] LLM extraction failed: {result.get('error')}")
+                logger.warning("[extract] LLM extraction failed: %s", result.get('error'))
             return  # LLM extraction replaces content filtering
 
         # ── Mode 2: Content Filtering (default) ──
@@ -606,12 +606,12 @@ class ValidateStage:
 
         schema = ctx.extraction_schema
         if schema is None:
-            logger.debug(f"[validate] trace={ctx.trace_id} no schema — pass-through")
+            logger.debug("[validate] trace=%s no schema — pass-through", ctx.trace_id)
             ctx.validation_passed = True
             # Clean data even without schema validation
             from ..extraction.cleaner import clean_record
             ctx.cleaned_data = clean_record(ctx.extracted_data)
-            logger.debug(f"[validate] clean_record applied, cleaned_data keys={list(ctx.cleaned_data.keys())}")
+            logger.debug("[validate] clean_record applied, cleaned_data keys=%s", list(ctx.cleaned_data.keys()))
             return ctx
 
         # Attempt schema validation (Pydantic-style)
@@ -632,7 +632,7 @@ class ValidateStage:
         if ctx.validation_passed and ctx.extracted_data:
             from ..extraction.cleaner import clean_record
             ctx.cleaned_data = clean_record(ctx.extracted_data)
-            logger.debug(f"[validate] clean_record applied, cleaned_data keys={list(ctx.cleaned_data.keys())}")
+            logger.debug("[validate] clean_record applied, cleaned_data keys=%s", list(ctx.cleaned_data.keys()))
 
         return ctx
 
@@ -658,7 +658,7 @@ class StoreStage:
         try:
             os.makedirs(self._cache_dir, exist_ok=True)
         except OSError as e:
-            logger.warning(f"Failed to create cache dir {self._cache_dir}: {e}")
+            logger.warning("Failed to create cache dir %s: %s", self._cache_dir, e)
 
     def _get_cache_path(self, url: str) -> Path:
         """Get filesystem path for URL cache."""
@@ -681,12 +681,12 @@ class StoreStage:
 
             # If ETag matches, page hasn't changed
             if etag and cached.get("etag") == etag:
-                logger.debug(f"[store] ETag match for {url}, using cache")
+                logger.debug("[store] ETag match for %s, using cache", url)
                 return cached.get("html", "")
 
             # If Last-Modified matches, page hasn't changed
             if last_modified and cached.get("last_modified") == last_modified:
-                logger.debug(f"[store] Last-Modified match for {url}, using cache")
+                logger.debug("[store] Last-Modified match for %s, using cache", url)
                 return cached.get("html", "")
         except (json.JSONDecodeError, OSError):
             pass
@@ -709,9 +709,9 @@ class StoreStage:
 
         try:
             cache_path.write_text(json.dumps(cache_data, ensure_ascii=False), encoding="utf-8")
-            logger.debug(f"[store] cached {url} ({len(html)} bytes)")
+            logger.debug("[store] cached %s (%s bytes)", url, len(html))
         except OSError as e:
-            logger.warning(f"[store] failed to cache {url}: {e}")
+            logger.warning("[store] failed to cache %s: %s", url, e)
 
     async def execute(self, ctx: PipelineContext) -> PipelineContext:
         """Enhanced execute with incremental crawling support."""
@@ -767,21 +767,21 @@ class FontDecodeStage:
 
     async def execute(self, ctx: PipelineContext) -> PipelineContext:
         if not ctx.raw_html or "@font-face" not in ctx.raw_html:
-            logger.debug(f"[font_decode] no encoded fonts detected, skipping")
+            logger.debug("[font_decode] no encoded fonts detected, skipping")
             return ctx
 
         try:
             # Step 1: Fix DOM CSS position offsets
             fixed_html = self._fixer.fix(ctx.raw_html)
             ctx.raw_html = fixed_html
-            logger.debug(f"[font_decode] DOMFixer applied")
+            logger.debug("[font_decode] DOMFixer applied")
 
             # Step 2: Try FontTools glyph mapping
             decoded = await self._cracker.decode(ctx.raw_html)
             if decoded and decoded != ctx.raw_html:
                 ctx.raw_html = decoded
                 ctx.extraction_confidence = max(ctx.extraction_confidence or 0, 0.85)
-                logger.debug(f"[font_decode] FontTools decoded successfully")
+                logger.debug("[font_decode] FontTools decoded successfully")
                 return ctx
 
             # Step 3: OCR fallback for dynamic glyphs
@@ -793,7 +793,7 @@ class FontDecodeStage:
                     f"[font_decode] OCR decoded (confidence={ocr_result.confidence:.2f})"
                 )
         except Exception as e:
-            logger.warning(f"[font_decode] failed: {e}")
+            logger.warning("[font_decode] failed: %s", e)
 
         return ctx
 

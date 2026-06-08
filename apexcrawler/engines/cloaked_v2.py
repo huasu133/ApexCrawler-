@@ -82,7 +82,7 @@ class CloakedV2Engine(BaseEngine):
         }
         if self._executable:
             launch_args["executable_path"] = self._executable
-            logger.info(f"CloakedV2Engine using CloakBrowser binary: {self._executable}")
+            logger.info("CloakedV2Engine using CloakBrowser binary: %s", self._executable)
 
         self._browser = await cloakbrowser.launch_async(**launch_args)
         self._context = await self._browser.new_context(viewport=self._viewport)
@@ -131,19 +131,19 @@ class CloakedV2Engine(BaseEngine):
             try:
                 await self._page.close()
             except Exception as e:
-                logger.debug(f"cloaked_v2 close page error: {e}")
+                logger.debug("cloaked_v2 close page error: %s", e)
             self._page = None
         if self._context:
             try:
                 await self._context.close()
             except Exception as e:
-                logger.debug(f"cloaked_v2 close context error: {e}")
+                logger.debug("cloaked_v2 close context error: %s", e)
             self._context = None
         if self._browser:
             try:
                 await self._browser.close()
             except Exception as e:
-                logger.debug(f"cloaked_v2 close browser error: {e}")
+                logger.debug("cloaked_v2 close browser error: %s", e)
             self._browser = None
 
     async def health_check(self) -> bool:

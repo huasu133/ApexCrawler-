@@ -1,6 +1,7 @@
 """Parallel zone for pipeline — Evade + Extract can run concurrently."""
 
-import asyncio, logging
+import asyncio
+import logging
 from ..core.context import PipelineContext
 
 logger = logging.getLogger(__name__)

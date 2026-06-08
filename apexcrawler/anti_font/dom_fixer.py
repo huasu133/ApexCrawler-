@@ -121,12 +121,6 @@ class DOMFixer:
         if not injections:
             return html
 
-        # Inject each pseudo content after its target element
-        for selector, text in injections:
-            if (selector, text) in {(s, t) for s, t in injections
-                                    if injections.index((s, t)) != injections.index((selector, text))}:
-                continue  # skip duplicates
-
         seen: set[tuple[str, str]] = set()
         for selector, text in injections:
             if (selector, text) in seen:

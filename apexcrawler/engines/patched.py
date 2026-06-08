@@ -144,7 +144,7 @@ class PatchedEngine(BaseEngine):
         }
         if self._executable:
             launch_args["executable_path"] = self._executable
-            logger.info(f"PatchedEngine using PatchRight binary: {self._executable}")
+            logger.info("PatchedEngine using PatchRight binary: %s", self._executable)
 
         self._browser = await self._pw.chromium.launch(**launch_args)
         self._context = await self._browser.new_context(viewport=self._viewport)

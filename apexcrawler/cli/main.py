@@ -1923,6 +1923,52 @@ def agent_cmd(query: str, llm: str, max_steps: int, verbose: bool) -> None:
     asyncio.run(_run())
 
 
+# ── inspect command ─────────────────────────────────────────
+
+@cli.command(name="inspect", help="网站安全审查 — 浏览器抓包 + 基础设施溯源")
+@click.argument("url", required=True)
+@click.option("--headless/--no-headless", default=True, help="是否以无头模式运行浏览器")
+@click.option("--timeout", "-t", type=int, default=30, help="浏览器加载超时（秒）")
+@click.option("--json", "json_output", is_flag=True, default=False, help="输出 JSON 格式报告")
+def inspect_cmd(url: str, headless: bool, timeout: int, json_output: bool) -> None:
+    """对目标 URL 进行全面安全审查。
+
+    包括：
+    - 基础设施溯源（DNS、IP、WHOIS、SSL、CDN 检测）
+    - 浏览器网络请求拦截与分析
+    - 第三方资源分类（统计、广告、CDN、追踪器等）
+    - 可疑内容检测
+
+    \b
+    示例:
+        apex inspect https://example.com
+        apex inspect https://x3qdu.com --json
+        apex inspect https://x3qdu.com --no-headless
+    """
+    import asyncio
+
+    async def _run():
+        from apexcrawler.inspector import inspect_url, format_inspection_report
+        report = await inspect_url(url, headless=headless, timeout=timeout)
+        if json_output:
+            from apexcrawler.inspection_types import InspectionReport
+            import json as json_mod
+            # Convert dataclass to dict
+            def _to_dict(obj):
+                if hasattr(obj, '__dataclass_fields__'):
+                    return {f: _to_dict(getattr(obj, f)) for f in obj.__dataclass_fields__}
+                if isinstance(obj, list):
+                    return [_to_dict(i) for i in obj]
+                if isinstance(obj, dict):
+                    return {k: _to_dict(v) for k, v in obj.items()}
+                return str(obj) if obj is not None else None
+            click.echo(json_mod.dumps(_to_dict(report), ensure_ascii=False, indent=2))
+        else:
+            click.echo(format_inspection_report(report))
+
+    asyncio.run(_run())
+
+
 # ── Entry point ────────────────────────────────────────────
 
 def main() -> None:

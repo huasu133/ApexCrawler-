@@ -81,7 +81,7 @@ class CloakedEngine(BaseEngine):
         }
         if self._executable:
             launch_args["executable_path"] = self._executable
-            logger.info(f"CloakedEngine using CloakBrowser binary: {self._executable}")
+            logger.info("CloakedEngine using CloakBrowser binary: %s", self._executable)
 
         self._browser = await self._pw.chromium.launch(**launch_args)
         self._context = await self._browser.new_context(viewport=self._viewport)
@@ -91,7 +91,7 @@ class CloakedEngine(BaseEngine):
         try:
             from apexcrawler.anti_font.wasm_interceptor import WASMInterceptor
         except ImportError as e:
-            logger.warning(f"WASMInterceptor import failed: {e}")
+            logger.warning("WASMInterceptor import failed: %s", e)
             WASMInterceptor = None
 
         if WASMInterceptor is not None:

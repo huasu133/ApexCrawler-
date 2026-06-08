@@ -497,7 +497,12 @@ class SelHealer:
             ``(new_selector, confidence)`` where confidence is 0.0–1.0.
         """
         # -- Phase 1: try the original selector ----------------------------
-        html = asyncio.run(page.content())
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            html = asyncio.run(page.content())
+        else:
+            html = loop.run_until_complete(page.content())
 
         try:
             tree = lhtml.fromstring(html)
@@ -574,7 +579,12 @@ class SelHealer:
             (selector, confidence) tuple
         """
         # Phase 1: Try original selector
-        html = asyncio.run(page.content())
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            html = asyncio.run(page.content())
+        else:
+            html = loop.run_until_complete(page.content())
         try:
             tree = lhtml.fromstring(html)
             if selector.startswith("//"):

@@ -88,7 +88,7 @@ async def ensure_subresource_load(
         try:
             entries = await page.evaluate("() => performance.getEntries().length")
         except Exception as e:
-            logger.debug(f"Performance API poll failed: {e}")
+            logger.debug("Performance API poll failed: %s", e)
             poll_failures += 1
             if poll_failures > 10:
                 break

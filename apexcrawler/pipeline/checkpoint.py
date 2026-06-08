@@ -70,7 +70,7 @@ class CheckpointManager:
     def __init__(self, storage_dir: str = ".apex_checkpoints"):
         self.storage_dir = Path(storage_dir)
         self.storage_dir.mkdir(parents=True, exist_ok=True)
-        logger.info(f"CheckpointManager initialized: {self.storage_dir}")
+        logger.info("CheckpointManager initialized: %s", self.storage_dir)
 
     def _checkpoint_path(self, job_id: str) -> Path:
         """返回 job_id 对应的检查点文件路径。"""
@@ -132,7 +132,7 @@ class CheckpointManager:
             "timestamp_iso": checkpoint["timestamp_iso"],
         })
 
-        logger.debug(f"Checkpoint saved: {path} (stage={stage})")
+        logger.debug("Checkpoint saved: %s (stage=%s)", path, stage)
         return str(path)
 
     def load(self, job_id: str) -> dict[str, Any] | None:
@@ -146,11 +146,11 @@ class CheckpointManager:
         """
         path = self._checkpoint_path(job_id)
         if not path.exists():
-            logger.warning(f"Checkpoint not found: {path}")
+            logger.warning("Checkpoint not found: %s", path)
             return None
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            logger.info(f"Checkpoint loaded: {path}")
+            logger.info("Checkpoint loaded: %s", path)
             return data
         except (json.JSONDecodeError, OSError) as e:
             logger.error(f"Failed to load checkpoint {path}: {e}")
@@ -187,7 +187,7 @@ class CheckpointManager:
             # 删除 storage_dir 下所有 .json 文件
             for f in self.storage_dir.glob("*.json"):
                 f.unlink()
-            logger.info(f"All checkpoints cleared in {self.storage_dir}")
+            logger.info("All checkpoints cleared in %s", self.storage_dir)
         else:
             # 删除以 job_id 开头的所有检查点文件和元数据条目
             meta_path = self._metadata_path()
@@ -207,4 +207,4 @@ class CheckpointManager:
             checkpoint_path = self._checkpoint_path(job_id)
             if checkpoint_path.exists():
                 checkpoint_path.unlink()
-            logger.info(f"Checkpoint cleared: {job_id}")
+            logger.info("Checkpoint cleared: %s", job_id)

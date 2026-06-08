@@ -67,7 +67,7 @@ class _UndetectedPage:
             try:
                 self._driver.quit()
             except Exception as e:
-                logger.debug(f"Undetected driver quit error: {e}")
+                logger.debug("Undetected driver quit error: %s", e)
             self._driver = None
 
 

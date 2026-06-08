@@ -90,8 +90,7 @@ class Page(Protocol):
     各引擎的 _PageAdapter 应继承 PageInteractionsMixin 来获得交互方法。
     """
 
-    @property
-    def content(self) -> str: ...
+    async def content(self) -> str: ...
 
     @property
     def url(self) -> str: ...

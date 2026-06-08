@@ -113,5 +113,5 @@ class SessionManager:
         for d in stale:
             self._sessions.pop(d)
         if stale:
-            logger.info(f"Cleaned {len(stale)} stale sessions")
+            logger.info("Cleaned %s stale sessions", len(stale))
         return len(stale)

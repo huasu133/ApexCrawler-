@@ -1,6 +1,7 @@
 """Browser storage persistence — LocalStorage + IndexedDB capture and restore."""
 
-import json, logging
+import json
+import logging
 logger = logging.getLogger(__name__)
 
 class StorageStore:
@@ -17,9 +18,9 @@ class StorageStore:
             ss = await page.evaluate("() => JSON.stringify(sessionStorage)")
             self._local_storage[domain] = json.loads(ls or "{}")
             self._session_storage[domain] = json.loads(ss or "{}")
-            logger.debug(f"Storage captured: {domain} (ls={len(self._local_storage[domain])}, ss={len(self._session_storage[domain])})")
+            logger.debug("Storage captured: %s (ls=%s, ss=%s)", domain, len(self._local_storage[domain]), len(self._session_storage[domain]))
         except Exception as e:
-            logger.warning(f"Storage capture failed for {domain}: {e}")
+            logger.warning("Storage capture failed for %s: %s", domain, e)
     
     def generate_inject_script(self, domain: str) -> str:
         """Generate JS injection script to restore storage."""

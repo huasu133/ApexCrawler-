@@ -327,13 +327,15 @@ def clean_record(data: dict[str, Any]) -> dict[str, Any]:
         elif any(kw in kl for kw in ("text", "body", "description", "summary")):
             cleaned[key] = clean_text(value)
         else:
-            cleaned[key] = clean_text(value) if len(value) > 2 else value
+            cleaned[key] = clean_text(value) if len(value) > self._MIN_TEXT_LENGTH else value
 
     return cleaned
 
 
 class Cleaner:
     """Pipeline-compatible data cleaner for post-extraction normalization."""
+
+    _MIN_TEXT_LENGTH = 2
 
     def clean(self, html: str) -> str:
         """Clean and normalize extracted HTML content.

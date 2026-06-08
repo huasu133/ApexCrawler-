@@ -17,10 +17,13 @@ Usage:
 from __future__ import annotations
 import asyncio
 import functools
+import ipaddress
 import json
 import logging
+import socket
 import time
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from apexcrawler.core.context import PipelineContext
 from apexcrawler.pipeline.stages import (
@@ -29,6 +32,46 @@ from apexcrawler.pipeline.stages import (
 from apexcrawler.pipeline.core import PipelineExecutor, StageConfig, RetryPolicy
 
 logger = logging.getLogger(__name__)
+
+# ══════════════════════════════════════════════════════════════════════
+# SSRF Protection
+# ══════════════════════════════════════════════════════════════════════
+
+_BLOCKED_NETWORKS = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fe80::/10"),
+]
+
+
+def _validate_url(url: str) -> None:
+    """Validate URL to prevent SSRF attacks. Raises ValueError if blocked."""
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        raise ValueError(f"Invalid URL: {url}")
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Blocked scheme: {parsed.scheme}")
+    host = parsed.hostname or ""
+    if host in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
+        raise ValueError(f"Blocked host: {host}")
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        # Not a literal IP — resolve via DNS
+        try:
+            resolved = socket.gethostbyname(host)
+            addr = ipaddress.ip_address(resolved)
+        except socket.gaierror:
+            return  # Cannot resolve — let the caller handle
+    else:
+        for net in _BLOCKED_NETWORKS:
+            if addr in net:
+                raise ValueError(f"Blocked IP: {host} (in {net})")
 
 
 class SDKRuntime:
@@ -61,6 +104,7 @@ def browser(engine: str = "auto", proxy: str | None = None, headless: bool = Tru
 
             # Build context from the first positional arg (should be URL)
             target_url = args[0] if args else kwargs.get('url', '')
+            _validate_url(target_url)
             ctx = PipelineContext(target_url=target_url)
             if engine and engine != "auto":
                 ctx.selected_engine = engine
@@ -103,6 +147,7 @@ def request(impersonate: str = "chrome131", retry: int = 3, proxy: str | None = 
             from apexcrawler.http.fetcher import FastFetcher
 
             target_url = args[0] if args else kwargs.get('url', '')
+            _validate_url(target_url)
 
             fetcher = FastFetcher(impersonate=impersonate, proxy=proxy)
             try:

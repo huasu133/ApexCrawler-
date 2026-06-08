@@ -96,7 +96,7 @@ class EvadeStage:
         except ImportError:
             logger.debug("CloudflareDetector not available, skipping CF detection")
         except Exception as e:
-            logger.warning(f"Cloudflare detection failed: {e}")
+            logger.warning("Cloudflare detection failed: %s", e)
 
             # ── TLS profile assignment ──
         profile = self._router.rotate()

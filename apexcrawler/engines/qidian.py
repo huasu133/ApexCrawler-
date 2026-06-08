@@ -535,14 +535,14 @@ class QidianEngine(BaseEngine):
                     page_html = await page.content()
 
                     # 通过 evaluate 提取渲染后的章节列表
-                    chapters_data = await page.evaluate(f"""() => {{
-                        const links = document.querySelectorAll('[class*="chapter"] a[href*="/chapter/{book_id}/"]');
-                        return Array.from(links).map(a => ({{
+                    chapters_data = await page.evaluate("""(bookId) => {
+                        const links = document.querySelectorAll('[class*="chapter"] a[href*="/chapter/" + bookId + "/"]');
+                        return Array.from(links).map(a => ({
                             title: a.textContent.trim(),
                             href: a.getAttribute('href') || '',
                             is_vip: a.closest('li')?.querySelector('.vip, .icon-vip, [class*="vip"]') !== null
-                        }}));
-                    }}""")
+                        }));
+                    }""", book_id)
                     logger.info("书籍页面加载完成，提取到 %d 章", len(chapters_data))
                 except Exception as e:
                     logger.warning("书籍页面加载失败: %s", e)
@@ -825,7 +825,7 @@ class QidianEngine(BaseEngine):
         try:
             await engine.launch()
             page = await engine.navigate(f"https://book.qidian.com/info/{book_id}")
-            html = await page.content
+            html = await page.content()
             return self._extract_catalog_from_html(html, book_id)
         finally:
             await engine.close()

@@ -1,7 +1,11 @@
-from __future__ import annotations
 """Cookie jar persistence — Netscape format + Redis support."""
+from __future__ import annotations
 
-import os, json, time, logging, tempfile
+import os
+import json
+import time
+import logging
+import tempfile
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -29,7 +33,7 @@ class CookieJarStore:
         except Exception:
             os.unlink(tmp_path)
             raise
-        logger.debug(f"Cookies saved: {domain} ({len(cookies)} items)")
+        logger.debug("Cookies saved: %s (%s items)", domain, len(cookies))
         return str(filepath)
     
     def load(self, domain: str) -> list[dict] | None:
@@ -58,7 +62,7 @@ class CookieJarStore:
             path = c.get("path", "/")
             name = c.get("name", "")
             value = c.get("value", "")
-            lines.append(f"{domain_flag}\t{domain_flag}\t{path}\t{secure}\t{expires}\t{name}\t{value}")
+            lines.append(f"{c.get('domain', '')}\t{domain_flag}\t{path}\t{secure}\t{expires}\t{name}\t{value}")
         return "\n".join(lines)
     
     def delete(self, domain: str):

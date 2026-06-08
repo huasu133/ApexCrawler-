@@ -1,11 +1,12 @@
-from __future__ import annotations
 """Async pipeline executor with retry, timeout, and rollback."""
+from __future__ import annotations
 
 import asyncio
 import random
 import logging
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
+from urllib.parse import urlparse
 from ..core.exceptions import NonRetryableError, RetryableError
 from ..core.context import PipelineContext
 from .checkpoint import CheckpointManager, _context_to_dict, _dict_to_context
@@ -71,7 +72,6 @@ class PipelineExecutor:
 
         # SessionManager: bind engine for domain consistency
         if self._session_mgr and ctx.selected_engine:
-            from urllib.parse import urlparse
             domain = urlparse(ctx.target_url).netloc
             self._session_mgr.bind_engine(domain, ctx.selected_engine, ctx.proxy or "")
 
@@ -100,7 +100,7 @@ class PipelineExecutor:
                 if delay > 0:
                     logger.debug(
                         f"[domain_rate] waiting {delay:.2f}s for "
-                        f"{__import__('urllib.parse').urlparse(ctx.target_url).netloc}"
+                        f"{urlparse(ctx.target_url).netloc}"
                     )
                     await asyncio.sleep(delay)
 
