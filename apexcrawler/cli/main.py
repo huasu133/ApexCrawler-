@@ -170,7 +170,7 @@ def cli(ctx: click.Context, log_level: str, json_log: bool, quiet: bool, verbose
 @click.option("--checkpoint-dir", type=click.Path(), default=None, help="检查点存储目录")
 @click.pass_context
 def get_cmd(ctx, url, quick, deep, auto, engine, output, timeout, proxy, json_output,
-            retries, schema, fast, markdown, llm, instruction, llm_schema,
+            retries, schema, fast, batch, markdown, llm, instruction, llm_schema,
             filter_query, geo, resume, checkpoint_dir):
     """统一爬取页面内容。
 
