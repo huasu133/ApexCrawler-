@@ -6,10 +6,14 @@
 
 ```bash
 pip install -e .
-apex get https://example.com                    # 快速抓取
-apex get https://example.com -o text             # 提取纯文本
+apex get https://example.com                    # 快速抓取（智能默认，自动选最佳模式）
+apex extract https://example.com                # 结构化提取页面数据
+apex search "Python 爬虫框架"                   # 搜索网络内容
+apex agent "分析 example.com 的产品定价"         # AI 自主研究助手
+apex inspect https://example.com                # 安全审查（DNS/WHOIS/CDN）
 apex novel info https://book.qidian.com/info/107580    # 小说目录
-apex novel download https://book.qidian.com/info/107580 -c 1-100  # 下载
+apex novel download https://book.qidian.com/info/107580 -c 1-100  # 小说下载
+apex config                                    # 配置管理、面板、Shell
 ```
 
 ## 🚀 最新功能
@@ -82,15 +86,18 @@ docker-compose up --build
 
 多阶段构建、Playwright + CloakBrowser 预下载、`shm_size=2gb`。
 
-### 🔎 更多功能
+### 🔎 全命令一览（7 个核心命令）
+
+全功能共 7 个命令：
 
 ```bash
-apex search "关键词"            # 网络搜索
-apex map site example.com      # 站点 URL 发现（sitemap 解析）
-apex interact url --script actions.json  # 页面交互（点击/填写/滚动）
-apex agent "你的问题"           # AI 自主研究
-apex view url                  # 页面截图
-apex save url                  # 保存到文件
+apex get <url>                 # 爬取页面内容（支持 --quick/--deep/--auto）
+apex extract <url>             # 结构化提取页面数据
+apex search <query>            # 网络搜索
+apex agent "<query>"           # AI 自主研究助手（多步骤推理）
+apex inspect <url>             # 网站安全审查（DNS/WHOIS/CDN/抓包）
+apex novel                     # 小说爬取（支持起点/笔趣阁等）
+apex config                    # 配置管理、面板、Shell
 ```
 
 ### 🔌 MCP 服务器（24+ 工具）

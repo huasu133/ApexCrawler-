@@ -4,8 +4,7 @@ ApexCrawler MCP Server — 让 AI 工具直接调用爬取能力。
 支持的 tools:
 - crawl(url, fast=False, engine=None) — 爬取 URL
 - extract(url, selector=None, format="txt") — 一键提取
-- qidian_list(book_id) — 获取起点章节列表
-- qidian_crawl(book_id, chapters=5) — 爬取起点章节
+- search(query, num=10) — 搜索网络
 """
 
 from __future__ import annotations
@@ -69,7 +68,7 @@ def _validate_url(url: str) -> None:
 
 server = FastMCP(
     name="ApexCrawler",
-    instructions="ApexCrawler MCP 服务器 — 提供网页爬取与内容提取能力",
+    instructions="ApexCrawler MCP Server — provides web crawling, content extraction, search, and URL inspection capabilities",
 )
 
 
@@ -81,10 +80,10 @@ server = FastMCP(
 @server.tool(
     name="crawl",
     description=(
-        "爬取指定 URL 并返回页面内容。"
-        "fast=True 时使用轻量 HTTP 客户端快速抓取（适合静态页面）；"
-        "fast=False 时使用完整管线（含 WAF 绕过、浏览器渲染）。"
-        "engine 可指定引擎：vanilla, patched, camoufox, cloaked, qidian。"
+        "Crawl a URL and return page content. "
+        "Use fast=True for quick HTTP fetch (static pages) or fast=False for full pipeline "
+        "(WAF bypass, browser rendering). "
+        "Specify engine: vanilla, patched, camoufox, cloaked, qidian."
     ),
 )
 async def crawl(
@@ -233,9 +232,10 @@ async def _pipeline_crawl(url: str, engine: Optional[str] = None) -> str:
 @server.tool(
     name="extract",
     description=(
-        "一键提取 URL 的内容。"
-        "使用轻量 HTTP 客户端快速获取页面。"
-        "可指定 CSS selector 提取特定元素，format 控制输出格式（txt/html/json）。"
+        "Extract content from a URL. "
+        "Uses lightweight HTTP client. "
+        "Optional CSS selector to extract specific elements. "
+        "Format: txt (plain text), html (raw HTML), json (structured JSON)."
     ),
 )
 async def extract(
@@ -333,124 +333,13 @@ def _html_to_text(html: str) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Tool: qidian_list
-# ══════════════════════════════════════════════════════════════════════
-
-
-@server.tool(
-    name="qidian_list",
-    description="获取起点中文网指定书籍的章节列表。自动过 WAF，无需登录即可获取免费章节。",
-)
-async def qidian_list(book_id: str) -> str:
-    """获取起点章节列表。
-
-    Args:
-        book_id: 起点书籍 ID（如 "107580"）。
-    """
-    try:
-        from apexcrawler.engines.qidian import QidianEngine
-        import json
-
-        engine = QidianEngine(headless=True)
-        chapters = engine.fetch_catalog(int(book_id))
-        result = []
-        for ch in chapters:
-            result.append({
-                "index": ch.index,
-                "title": ch.title,
-                "is_vip": ch.is_vip,
-                "word_count": ch.word_count,
-                "chapter_id": ch.chapter_id,
-            })
-        return json.dumps({
-            "book_id": book_id,
-            "total": len(result),
-            "free_count": sum(1 for c in result if not c["is_vip"]),
-            "chapters": result,
-        }, ensure_ascii=False)
-    except Exception as e:
-        import json
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
-# ══════════════════════════════════════════════════════════════════════
-# Tool: qidian_crawl
-# ══════════════════════════════════════════════════════════════════════
-
-
-@server.tool(
-    name="qidian_crawl",
-    description=(
-        "爬取起点中文网指定书籍的章节内容。"
-        "自动获取章节列表，然后提取前 N 章正文。"
-        "book_id 为起点书籍 ID（数字），chapters 指定爬取章节数（默认 5）。"
-    ),
-)
-async def qidian_crawl(book_id: str, chapters: int = 5) -> str:
-    """爬取起点章节内容。
-
-    Args:
-        book_id: 起点书籍 ID（如 "107580"）。
-        chapters: 爬取章节数量（默认 5）。
-    """
-    try:
-        from apexcrawler.engines.qidian import QidianEngine
-
-        engine = QidianEngine(headless=True)
-        try:
-            # 获取章节列表
-            catalog = engine.fetch_catalog(int(book_id))
-            if not catalog:
-                return json.dumps(
-                    {
-                        "book_id": book_id,
-                        "error": "未能获取章节列表",
-                        "chapters": [],
-                    },
-                    ensure_ascii=False,
-                )
-
-            # 仅爬取免费章节
-            free_chapters = [ch for ch in catalog if not ch.is_vip]
-            target = free_chapters[:chapters]
-
-            # 批量拉取正文
-            results = engine.fetch_chapters(target)
-
-            return json.dumps(
-                {
-                    "book_id": book_id,
-                    "total_chapters_in_book": len(catalog),
-                    "free_chapters_count": len(free_chapters),
-                    "fetched_count": len(results),
-                    "chapters": [
-                        {
-                            "index": ch.index,
-                            "title": ch.title,
-                            "is_vip": ch.is_vip,
-                            "word_count": ch.word_count,
-                            "content": ch.content,
-                        }
-                        for ch in results
-                    ],
-                },
-                ensure_ascii=False,
-            )
-        finally:
-            engine.close_sync()
-    except Exception as e:
-        logger.exception("qidian_crawl tool failed")
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
-# ══════════════════════════════════════════════════════════════════════
-# Tools: crawl_site / map_site
+# Tool: crawl_site
 # ══════════════════════════════════════════════════════════════════════
 
 
 @server.tool(
     name="crawl_site",
-    description="站点级爬取 — 从指定 URL 开始，自动发现并爬取站内链接。max_pages 控制最大页面数，same_domain 控制是否仅爬取同域名。",
+    description="Site-level crawl — start from a URL, auto-discover and crawl internal links. max_pages controls page limit, same_domain restricts to same domain.",
 )
 async def crawl_site(url: str, max_pages: int = 10, same_domain: bool = True) -> str:
     """爬取站点内多个页面。"""
@@ -509,34 +398,14 @@ async def crawl_site(url: str, max_pages: int = 10, same_domain: bool = True) ->
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@server.tool(
-    name="map_site",
-    description="站点 URL 发现 — 输入域名，返回该域名下所有公开 URL 路径列表",
-)
-async def map_site_tool(domain: str, depth: int = 0) -> str:
-    """Discover all public URLs for a domain.
-    
-    Args:
-        domain: Domain name or full URL (e.g. "example.com" or "https://example.com").
-        depth: Optional BFS crawl depth (0 = sitemap only, 1+ = also crawl pages).
-    
-    Returns:
-        JSON string with discovered URLs.
-    """
-    from apexcrawler.map import map_site
-    import json
-    result = await map_site(domain=domain, depth=depth)
-    return json.dumps(result, ensure_ascii=False)
-
-
 # ══════════════════════════════════════════════════════════════════════
-# New Tools: export_crawl
+# Tool: export_crawl
 # ══════════════════════════════════════════════════════════════════════
 
 
 @server.tool(
     name="export_crawl",
-    description="导出爬取结果 — 支持 JSON、JSONL、CSV 格式。data 为 JSON 字符串格式的爬取结果。",
+    description="Export crawl results in JSON, JSONL, or CSV format. Pass data as a JSON string of crawl results.",
 )
 async def export_crawl(data: str, format: str = "json") -> str:
     """导出爬取结果为指定格式。"""
@@ -565,13 +434,13 @@ async def export_crawl(data: str, format: str = "json") -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# New Tools: screenshot_url
+# Tool: screenshot_url
 # ══════════════════════════════════════════════════════════════════════
 
 
 @server.tool(
     name="screenshot_url",
-    description="截取指定 URL 的页面截图。full_page=True 时截取完整页面（含滚动区域）。返回 base64 编码的 PNG 图片。",
+    description="Take a screenshot of a URL. full_page=True captures full page (including scroll area). Returns base64-encoded PNG.",
 )
 async def screenshot_url(url: str, full_page: bool = False) -> str:
     """截取页面截图。"""
@@ -603,100 +472,13 @@ async def screenshot_url(url: str, full_page: bool = False) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# New Tools: validate_selector
-# ══════════════════════════════════════════════════════════════════════
-
-
-@server.tool(
-    name="validate_selector",
-    description="验证 CSS/XPath 选择器是否能在页面上匹配到元素。返回匹配数量和示例内容。",
-)
-async def validate_selector(url: str, selector: str, selector_type: str = "css") -> str:
-    """验证选择器是否有效。"""
-    try:
-        _validate_url(url)
-        from apexcrawler.http.fetcher import FastFetcher
-        from bs4 import BeautifulSoup
-
-        fetcher = FastFetcher(impersonate="chrome131")
-        try:
-            result = fetcher.get(url)
-            html = result.get("html", "")
-            status = result.get("status_code", 0)
-
-            if status != 200:
-                return json.dumps({"url": url, "error": f"HTTP {status}"}, ensure_ascii=False)
-
-            soup = BeautifulSoup(html, "html.parser")
-
-            if selector_type == "xpath":
-                # BeautifulSoup doesn't support XPath directly, try lxml
-                try:
-                    from lxml import html as lhtml
-
-                    tree = lhtml.fromstring(html)
-                    elements = tree.xpath(selector)
-                    match_count = len(elements)
-                    samples = [(str(el.tag), (el.text or "")[:100]) for el in elements[:3]] if elements else []
-                except Exception:
-                    match_count = 0
-                    samples = []
-            else:
-                elements = soup.select(selector)
-                match_count = len(elements)
-                samples = [str(el)[:200] for el in elements[:3]]
-
-            return json.dumps(
-                {
-                    "url": url,
-                    "selector": selector,
-                    "selector_type": selector_type,
-                    "match_count": match_count,
-                    "matches": match_count > 0,
-                    "samples": samples,
-                },
-                ensure_ascii=False,
-            )
-        finally:
-            fetcher.close()
-    except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
-# ══════════════════════════════════════════════════════════════════════
-# New Tools: clear_cache
-# ══════════════════════════════════════════════════════════════════════
-
-
-@server.tool(
-    name="clear_cache",
-    description="清除爬虫的页面前端缓存。",
-)
-async def clear_cache() -> str:
-    """清除页面缓存。"""
-    try:
-        cache_dir = os.path.expanduser("~/.apexcrawler/page_cache")
-        if os.path.exists(cache_dir):
-            import shutil
-
-            shutil.rmtree(cache_dir)
-            os.makedirs(cache_dir)
-            return json.dumps(
-                {"success": True, "message": f"Cache directory {cache_dir} cleared"}, ensure_ascii=False
-            )
-        return json.dumps({"success": True, "message": "No cache directory found"}, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
-# ══════════════════════════════════════════════════════════════════════
-# New Tools: list_schemas
+# Tool: list_schemas
 # ══════════════════════════════════════════════════════════════════════
 
 
 @server.tool(
     name="list_schemas",
-    description="列出所有可用的数据提取 Schema（如 product、article、company 等）。",
+    description="List all available data extraction schemas (e.g. product, article, company).",
 )
 async def list_schemas() -> str:
     """列出可用 Schema。"""
@@ -716,224 +498,13 @@ async def list_schemas() -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# New Tools: crawl_status
+# Tool: page_info
 # ══════════════════════════════════════════════════════════════════════
-
-
-@server.tool(
-    name="crawl_status",
-    description="获取爬虫运行状态统计（如请求数、错误率等）。",
-)
-async def crawl_status() -> str:
-    """获取爬虫状态统计。"""
-    try:
-        # Dynamically list engines from registry instead of hardcoding
-        from apexcrawler.routing.registry import EngineRegistry
-        engines = list(EngineRegistry.list_all().keys())
-        return json.dumps(
-            {
-                "status": "running",
-                "version": "0.1.0",
-                "engines_available": engines,
-                "uptime": "N/A",
-                "cached_pages": 0,
-            },
-            ensure_ascii=False,
-        )
-    except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
-# ══════════════════════════════════════════════════════════════════════
-# New Tools: batch_crawl
-# ══════════════════════════════════════════════════════════════════════
-
-
-@server.tool(
-    name="batch_crawl",
-    description="批量爬取多个 URL。urls 为 JSON 数组字符串（如 '[\"https://a.com\",\"https://b.com\"]'）。engine 和 fast 参数同 crawl 工具。",
-)
-async def batch_crawl(urls: str, engine: Optional[str] = None, fast: bool = False) -> str:
-    """批量爬取多个 URL。"""
-    try:
-        import json
-
-        url_list = json.loads(urls) if isinstance(urls, str) else urls
-
-        if not isinstance(url_list, list):
-            return json.dumps({"error": "urls must be a JSON array"}, ensure_ascii=False)
-
-        # Limit to 20 concurrent URLs
-        url_list = url_list[:20]
-
-        from apexcrawler.http.fetcher import FastFetcher
-
-        fetcher = FastFetcher(impersonate="chrome131")
-        try:
-            results = []
-            for target_url in url_list:
-                try:
-                    _validate_url(target_url)
-                    result = fetcher.get(target_url)
-                    results.append(
-                        {
-                            "url": target_url,
-                            "status_code": result.get("status_code", 0),
-                            "content_length": len(result.get("html", "")),
-                        }
-                    )
-                except Exception as e:
-                    results.append({"url": target_url, "error": str(e)})
-
-            return json.dumps(
-                {
-                    "total": len(url_list),
-                    "success_count": sum(1 for r in results if r.get("status_code", 0) == 200),
-                    "results": results,
-                },
-                ensure_ascii=False,
-            )
-        finally:
-            fetcher.close()
-    except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
-# ══════════════════════════════════════════════════════════════════════
-# New Tools: train_selector
-# ══════════════════════════════════════════════════════════════════════
-
-
-@server.tool(
-    name="train_selector",
-    description="教导爬虫识别指定字段的选择器。验证选择器有效性后持久化到 SelectorStore。",
-)
-async def train_selector(url: str, field_name: str, selector: str) -> str:
-    """教导选择器。"""
-    try:
-        _validate_url(url)
-        from apexcrawler.http.fetcher import FastFetcher
-        from bs4 import BeautifulSoup
-
-        fetcher = FastFetcher(impersonate="chrome131")
-        try:
-            result = fetcher.get(url)
-            html = result.get("html", "")
-            status = result.get("status_code", 0)
-
-            if status != 200:
-                return json.dumps({"error": f"HTTP {status}"}, ensure_ascii=False)
-
-            soup = BeautifulSoup(html, "html.parser")
-            elements = soup.select(selector)
-            match_count = len(elements)
-
-            return json.dumps({
-                "url": url, "field": field_name, "selector": selector,
-                "match_count": match_count, "valid": match_count > 0,
-                "sample": str(elements[0])[:200] if elements else None,
-            }, ensure_ascii=False)
-        finally:
-            fetcher.close()
-    except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
-# ══════════════════════════════════════════════════════════════════════
-# New Tools: pause_crawl / resume_crawl / cancel_crawl
-# ══════════════════════════════════════════════════════════════════════
-
-
-@server.tool(
-    name="pause_crawl",
-    description="暂停正在运行的爬取任务。task_id 为创建任务时返回的 ID。",
-)
-async def pause_crawl(task_id: str) -> str:
-    try:
-        from apexcrawler.task_manager import TaskManager
-
-        tm = TaskManager()
-        ok = await tm.pause_task(task_id)
-        return json.dumps({"task_id": task_id, "paused": ok}, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
-@server.tool(
-    name="resume_crawl",
-    description="恢复已暂停的爬取任务。",
-)
-async def resume_crawl(task_id: str) -> str:
-    try:
-        from apexcrawler.task_manager import TaskManager
-
-        tm = TaskManager()
-        ok = await tm.resume_task(task_id)
-        return json.dumps({"task_id": task_id, "resumed": ok}, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
-@server.tool(
-    name="cancel_crawl",
-    description="取消正在运行或暂停的爬取任务。",
-)
-async def cancel_crawl(task_id: str) -> str:
-    try:
-        from apexcrawler.task_manager import TaskManager
-
-        tm = TaskManager()
-        ok = await tm.cancel_task(task_id)
-        return json.dumps({"task_id": task_id, "cancelled": ok}, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
-# ══════════════════════════════════════════════════════════════════════
-# New Tools: crawl_metrics / selector_history / page_info
-# ══════════════════════════════════════════════════════════════════════
-
-
-@server.tool(
-    name="crawl_metrics",
-    description="获取爬虫运行状态统计，包括总任务数、各状态分布、引擎可用性等。",
-)
-async def crawl_metrics() -> str:
-    try:
-        from apexcrawler.task_manager import TaskManager
-
-        tm = TaskManager()
-        metrics = await tm.get_metrics()
-        from apexcrawler.routing.registry import EngineRegistry
-        metrics["engines_available"] = list(EngineRegistry.list_all().keys())
-        return json.dumps(metrics, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
-@server.tool(
-    name="selector_history",
-    description="查看指定字段的选择器变更历史（来自 SelectorDatabase）。field_name 为字段名称。",
-)
-async def selector_history(field_name: str) -> str:
-    try:
-        from apexcrawler.extraction.sel_healer import SelectorDatabase
-
-        db = SelectorDatabase()
-        # Get all selectors for this field across all URLs
-        rows = db._conn.execute(
-            "SELECT url_pattern, selector, confidence, success_count, fail_count, last_used_at FROM selectors WHERE field_name=? ORDER BY confidence DESC LIMIT 20",
-            (field_name,)
-        ).fetchall()
-        result = [{"url_pattern": r[0], "selector": r[1], "confidence": r[2], "success_count": r[3], "fail_count": r[4]} for r in rows]
-        return json.dumps({"field": field_name, "selectors": result}, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
 @server.tool(
     name="page_info",
-    description="获取页面元数据：内容类型、编码、标题、链接数、图片数等。",
+    description="Get page metadata: content type, encoding, title, link count, image count, etc.",
 )
 async def page_info(url: str) -> str:
     try:
@@ -970,13 +541,13 @@ async def page_info(url: str) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# New Tools: create_crawl_task / get_task / list_crawl_tasks
+# Tools: create_crawl_task / get_task
 # ══════════════════════════════════════════════════════════════════════
 
 
 @server.tool(
     name="create_crawl_task",
-    description="创建异步爬取任务。返回 task_id 用于后续查询状态、暂停、恢复或取消。",
+    description="Create an async crawl task. Returns task_id for status queries, pause, resume, or cancel.",
 )
 async def create_crawl_task(url: str, engine: str = "") -> str:
     try:
@@ -995,7 +566,7 @@ async def create_crawl_task(url: str, engine: str = "") -> str:
 
 @server.tool(
     name="get_task",
-    description="查询爬取任务的状态和结果。task_id 为创建任务时返回的 ID。",
+    description="Query crawl task status and result by task_id.",
 )
 async def get_task(task_id: str) -> str:
     try:
@@ -1014,24 +585,6 @@ async def get_task(task_id: str) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@server.tool(
-    name="list_crawl_tasks",
-    description="列出爬取任务列表。limit 控制返回数量（默认 50），status 可选过滤（pending/running/completed/failed/cancelled/paused）。",
-)
-async def list_crawl_tasks(limit: int = 50, status: str = "") -> str:
-    try:
-        from apexcrawler.task_manager import TaskManager
-
-        tm = TaskManager()
-        tasks = await tm.list_tasks(limit=limit, status=status if status else None)
-        return json.dumps({
-            "total": len(tasks),
-            "tasks": [{"task_id": t.id, "url": t.url, "status": t.status.value, "engine": t.engine, "progress": t.progress} for t in tasks],
-        }, ensure_ascii=False)
-    except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-
 # ══════════════════════════════════════════════════════════════════════
 # Novel tools
 # ══════════════════════════════════════════════════════════════════════
@@ -1039,7 +592,7 @@ async def list_crawl_tasks(limit: int = 50, status: str = "") -> str:
 
 @server.tool(
     name="novel_info",
-    description="获取小说信息：目录、章节数、免费/付费状态。支持起点、番茄、笔趣阁等站点。",
+    description="Get novel information: table of contents, chapter count, free/paid status. Supports Qidian, Fanqie, Biquge, etc.",
 )
 async def novel_info(url: str) -> str:
     import json, logging
@@ -1065,7 +618,7 @@ async def novel_info(url: str) -> str:
 
 @server.tool(
     name="novel_download",
-    description="下载小说章节到本地文件。url 为小说页面链接，chapters 可选章节范围如 '1-50'。返回文件路径。",
+    description="Download novel chapters to a local file. url is the novel page link, chapters specifies range (e.g. '1-50'). Returns file path.",
 )
 async def novel_download(url: str, chapters: str = "") -> str:
     import json, logging
@@ -1091,7 +644,7 @@ async def novel_download(url: str, chapters: str = "") -> str:
 # ══════════════════════════════════════════════════════════════════════
 
 
-@server.tool(name="search", description="搜索网络并返回结构化结果列表（标题、链接、摘要）")
+@server.tool(name="search", description="Search the web and return structured results (title, link, snippet).")
 async def search_web_tool(query: str, num: int = 10) -> str:
     """Search the web using configured search provider.
     
@@ -1109,7 +662,7 @@ async def search_web_tool(query: str, num: int = 10) -> str:
 
 @server.tool(
     name="inspect_url",
-    description="全面审查一个 URL（浏览器抓包 + 基础设施溯源）— 分类第三方资源、检测 CDN/统计/广告、分析 DNS/WHOIS/IP",
+    description="Comprehensive URL inspection (browser capture + infrastructure OSINT) — categorizes third-party resources, detects CDN/analytics/ads, analyzes DNS/WHOIS/IP.",
 )
 async def inspect_url_tool(url: str, headless: bool = True, timeout: int = 30) -> str:
     """Perform a comprehensive security inspection of a target URL.
