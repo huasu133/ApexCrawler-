@@ -231,7 +231,7 @@ def _run_quick_get(ctx, url, engine, proxy, timeout, llm, instruction,
                     click.echo(text[:2000])
                     return
         except Exception as e:
-            logger.debug("Novel detection failed: %s", e)
+            logger.warning("Novel detection failed: %s", e)
 
     try:
         from apexcrawler.get import get
@@ -251,6 +251,7 @@ def _run_quick_get(ctx, url, engine, proxy, timeout, llm, instruction,
         elif not llm and not filter_query:
             click.echo(content, nl=False)
     except Exception as e:
+        logger.error("Quick get failed: %s", e, exc_info=True)
         click.echo(_format_error(f"Error: {e}"), err=True)
         raise click.Abort()
 
@@ -275,6 +276,7 @@ def _run_llm_extraction(content, llm_provider, instruction, llm_schema):
         else:
             click.echo(f"\n# LLM extraction failed: {result.get('error')}", err=True)
     except Exception as e:
+        logger.error("LLM extraction error: %s", e, exc_info=True)
         click.echo(f"\n# LLM extraction error: {e}", err=True)
 
 
@@ -315,7 +317,7 @@ def _run_auto_crawl(ctx, url, engine, output, timeout, proxy, json_output,
                 Path(output).write_text(content, encoding="utf-8")
             return
     except Exception:
-        pass
+        logger.error("Quick mode failed in auto crawl", exc_info=True)
     # Fall back to deep crawl
     click.echo("Quick mode failed, falling back to deep crawl...")
     _run_deep_crawl(ctx, url, engine, output, timeout, proxy, json_output,
@@ -504,6 +506,7 @@ def _run_pipeline_crawl(ctx, urls, engine, output, timeout, proxy, json_output,
                 click.echo(f"  [SSRF blocked] {e}", err=True)
                 results.append({"url": target_url, "error": f"SSRF blocked: {e}"})
             except Exception as e:
+                logger.error("Pipeline crawl failed for %s: %s", target_url, e, exc_info=True)
                 click.echo(_format_error(f"  Error: {e}"), err=True)
                 results.append({"url": target_url, "error": str(e)})
 

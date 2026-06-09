@@ -23,6 +23,8 @@ from lxml import html as lhtml
 from lxml.etree import _Element
 from lxml.html import HtmlElement
 
+from apexcrawler.utils.security import validate_url
+
 logger = logging.getLogger(__name__)
 
 
@@ -206,6 +208,7 @@ class SelHealer:
             if hasattr(ctx, "user_agent") and ctx.user_agent:
                 headers["User-Agent"] = ctx.user_agent
             proxy = getattr(ctx, "proxy", None)
+            validate_url(url)
             async with httpx.AsyncClient(timeout=15, follow_redirects=True, proxy=proxy, headers=headers) as c:
                 r = await c.get(url)
                 r.raise_for_status()
@@ -223,6 +226,7 @@ class SelHealer:
             if hasattr(ctx, "user_agent") and ctx.user_agent:
                 headers["User-Agent"] = ctx.user_agent
             proxy = getattr(ctx, "proxy", None)
+            validate_url(url)
             async with httpx.AsyncClient(timeout=10, follow_redirects=True, proxy=proxy, headers=headers) as c:
                 r = await c.get(url)
                 r.raise_for_status()

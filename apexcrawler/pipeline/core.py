@@ -114,6 +114,32 @@ class PipelineExecutor:
                 ctx = await self._execute_with_retry(stage, ctx, cfg)
                 executed.append(stage)
 
+                # ── DegradeManager: record response after stage execution ──
+                if self._degrade_mgr and stage.name in ("extract", "validate"):
+                    state = self._degrade_mgr.record_response(
+                        url=ctx.target_url,
+                        status=getattr(ctx, '_last_status', 200),
+                        body=ctx.raw_html or "",
+                    )
+                    ctx.degrade_state = state
+
+                    if state.captcha_detected:
+                        logger.warning(
+                            "[degrade] captcha detected for %s (layer=%s)",
+                            ctx.target_url, state.layer,
+                        )
+
+                    # If the response signals need for degradation, lift the
+                    # engine for the next iteration
+                    if self._degrade_mgr.should_use_browser(ctx):
+                        old_engine = ctx.selected_engine
+                        ctx.selected_engine = self._degrade_mgr.degrade(ctx.selected_engine)
+                        if old_engine != ctx.selected_engine:
+                            logger.warning(
+                                "[degrade] engine degraded %s → %s (response-driven)",
+                                old_engine, ctx.selected_engine,
+                            )
+
                 # Save checkpoint after each successful stage
                 if self._checkpoint_mgr:
                     ctx_dict = _context_to_dict(ctx)

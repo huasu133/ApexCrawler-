@@ -9,6 +9,10 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from apexcrawler.pipeline.degrade import DegradeState
 
 
 @dataclass
@@ -64,6 +68,9 @@ class PipelineContext:
     cleaned_data: dict | None = None
     _last_headers: dict = field(default_factory=dict)
     incremental_hit: bool = False
+
+    # ── Degrade state from DegradeManager ──
+    degrade_state: object | None = None  # DegradeState instance
 
     # ── Error tracking ──
     retry_count: int = 0

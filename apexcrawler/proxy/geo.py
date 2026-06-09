@@ -22,6 +22,8 @@ from typing import Any
 
 import httpx
 
+from apexcrawler.utils.security import validate_url
+
 logger = logging.getLogger(__name__)
 
 
@@ -198,8 +200,10 @@ class GeoResolver:
     async def _lookup_ip_api(self, ip: str) -> GeoInfo:
         """Look up using the free ip-api.com service."""
         try:
+            api_url = f"http://ip-api.com/json/{ip}?fields=66846719"
+            validate_url(api_url)
             async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(f"http://ip-api.com/json/{ip}?fields=66846719")
+                resp = await client.get(api_url)
                 resp.raise_for_status()
                 data = resp.json()
                 if data.get("status") == "success":
@@ -225,8 +229,10 @@ class GeoResolver:
         """Look up using ipinfo.io (requires token)."""
         try:
             headers = {"Authorization": f"Bearer {self._ipinfo_token}"}
+            api_url = f"https://ipinfo.io/{ip}/json"
+            validate_url(api_url)
             async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(f"https://ipinfo.io/{ip}/json", headers=headers)
+                resp = await client.get(api_url, headers=headers)
                 resp.raise_for_status()
                 data = resp.json()
                 loc = data.get("loc", "0,0").split(",")

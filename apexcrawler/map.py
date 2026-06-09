@@ -10,6 +10,8 @@ import re
 from typing import List, Optional, Set
 from urllib.parse import urlparse, urljoin
 
+from apexcrawler.utils.security import validate_url
+
 logger = logging.getLogger(__name__)
 
 _BLOCKED_NETWORKS = [
@@ -49,6 +51,7 @@ def _validate_url(url: str) -> None:
 async def fetch_url(url: str, timeout: int = 10) -> Optional[str]:
     """Fetch a URL and return its text content."""
     try:
+        validate_url(url)
         import httpx
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             resp = await client.get(url, headers={

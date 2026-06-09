@@ -2,6 +2,8 @@
 
 import logging
 
+from apexcrawler.utils.security import validate_url
+
 logger = logging.getLogger(__name__)
 
 
@@ -42,6 +44,7 @@ class FontRecoveryManager:
         import httpx
         from fontTools.ttLib import TTFont
 
+        validate_url(url)
         async with httpx.AsyncClient(timeout=15) as c:
             r = await c.get(url)
             r.raise_for_status()

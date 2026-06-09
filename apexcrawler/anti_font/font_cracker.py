@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib, logging, re, io
 from typing import Optional
 
+from apexcrawler.utils.security import validate_url
+
 logger = logging.getLogger(__name__)
 
 class FontCracker:
@@ -67,6 +69,7 @@ class FontCracker:
             raise ImportError("fonttools[woff] required")
         
         # Download font
+        validate_url(url)
         import httpx
         async with httpx.AsyncClient() as client:
             resp = await client.get(url, timeout=15)
@@ -91,6 +94,7 @@ class FontCracker:
             from PIL import Image, ImageDraw, ImageFont
 
             # Download font
+            validate_url(url)
             async with httpx.AsyncClient(timeout=15, follow_redirects=True) as c:
                 r = await c.get(url)
                 r.raise_for_status()

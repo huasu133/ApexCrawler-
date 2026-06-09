@@ -163,10 +163,7 @@ def create_app() -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def index():
-        return DASHBOARD_HTML.replace(
-            '<meta name="api-key" content="">',
-            f'<meta name="api-key" content="{_EXPECTED_API_KEY}">',
-        )
+        return DASHBOARD_HTML
 
     return app
 
@@ -176,7 +173,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="api-key" content="">
 <title>ApexCrawler Dashboard</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -280,12 +276,22 @@ tr:last-child td{border-bottom:none}
 // ── State ──
 let tasks = [];
 let selectedTaskId = null;
+let API_KEY = sessionStorage.getItem('apex_api_key');
 
-const API_KEY = document.querySelector('meta[name="api-key"]').getAttribute('content');
+function ensureApiKey() {
+    if (!API_KEY) {
+        API_KEY = prompt('请输入 API Key：');
+        if (API_KEY) {
+            sessionStorage.setItem('apex_api_key', API_KEY);
+        }
+    }
+    return API_KEY;
+}
 
 async function apiFetch(url, options = {}) {
+    const key = ensureApiKey();
     const headers = options.headers || {};
-    if (API_KEY) headers['X-API-Key'] = API_KEY;
+    if (key) headers['X-API-Key'] = key;
     const r = await fetch(url, { ...options, headers });
     if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
     return r.json();

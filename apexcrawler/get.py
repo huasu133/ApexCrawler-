@@ -5,8 +5,10 @@ Usage:
     from apexcrawler import get
     html = get("https://example.com")
     html = get("https://example.com", engine="cloaked_v2")
+    html = get("https://example.com", engine="vanilla", proxy="http://user:pass@host:port")
 """
 from __future__ import annotations
+import asyncio
 import ipaddress
 import logging
 import re
@@ -57,6 +59,37 @@ def _validate_url(url: str) -> None:
                 raise ValueError(f"Blocked IP: {host} (in {net})")
 
 
+def _extract_text(html: str) -> str:
+    """Strip HTML tags and normalize whitespace for text output."""
+    text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+async def _fetch_via_engine(
+    engine_name: str, url: str, proxy: str, timeout: int
+) -> str:
+    """Fetch a URL using a browser engine. Internal helper for get()."""
+    from apexcrawler.routing.registry import EngineRegistry
+
+    engine_cls = EngineRegistry.get(engine_name)
+    if engine_cls is None:
+        logger.warning("Unknown engine '%s', falling back to FastFetcher", engine_name)
+        return ""
+
+    engine = engine_cls()
+    try:
+        await engine.launch()
+        page = await engine.navigate(url, proxy=proxy if proxy else None)
+        html = await page.content()
+        await page.close()
+        return html
+    finally:
+        await engine.close()
+
+
 def get(url: str, engine: str = "", proxy: str = "", timeout: int = 30,
         output: str = "html") -> str:
     """Fetch a URL and return its content as a string.
@@ -64,23 +97,47 @@ def get(url: str, engine: str = "", proxy: str = "", timeout: int = 30,
     Simple one-liner, like requests.get().
     Returns HTML by default. Use output="text" for plain text.
 
-    Note: The `engine` parameter is reserved for future browser-engine
-    support; currently always uses HTTP FastFetcher.
+    When engine is specified (e.g. "vanilla", "patched", "camoufox",
+    "cloaked", "cloaked_v2", "pydoll"), uses the corresponding browser
+    engine.  Falls back to HTTP FastFetcher on engine failure.
 
     Examples:
         html = get("https://example.com")
         text = get("https://example.com", output="text")
         html = get("https://example.com", engine="cloaked_v2")
     """
-    if engine:
-        logger.warning("engine parameter is not yet supported (using default HTTP fetcher)")
 
-    # SSRF validation
+    # SSRF validation (always applies, regardless of engine)
     _validate_url(url)
 
+    # ── Browser engine path ────────────────────────────────────
+    if engine:
+        try:
+            html = asyncio.run(
+                _fetch_via_engine(engine, url, proxy, timeout)
+            )
+            if html:
+                logger.info("Engine '%s' fetched %s (%d bytes)", engine, url, len(html))
+                return _extract_text(html) if output == "text" else html
+            # Empty result from engine — fall through to FastFetcher
+            logger.warning("Engine '%s' returned empty content, falling back", engine)
+        except ImportError:
+            raise
+        except Exception as e:
+            logger.warning(
+                "Engine '%s' failed for %s: %s, falling back to FastFetcher",
+                engine, url, e,
+            )
+            logger.debug("Full traceback:", exc_info=True)
+
+    # ── HTTP FastFetcher path (default / fallback) ─────────────
     try:
         from apexcrawler.http.fetcher import FastFetcher
-        fetcher = FastFetcher(impersonate="chrome131", proxy=proxy if proxy else None, timeout=timeout)
+        fetcher = FastFetcher(
+            impersonate="chrome131",
+            proxy=proxy if proxy else None,
+            timeout=timeout,
+        )
         try:
             result = fetcher.get(url)
             status = result.get("status_code", 0)
@@ -90,13 +147,7 @@ def get(url: str, engine: str = "", proxy: str = "", timeout: int = 30,
                 logger.warning("HTTP %s for %s", status, url)
 
             if output == "text" and text:
-                # Remove script and style content first (may contain non-text)
-                text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL | re.IGNORECASE)
-                text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
-                # Strip remaining HTML tags
-                text = re.sub(r'<[^>]+>', '', text)
-                # Normalize whitespace
-                text = re.sub(r'\s+', ' ', text).strip()
+                text = _extract_text(text)
 
             return text
         finally:
