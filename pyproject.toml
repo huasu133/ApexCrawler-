@@ -19,6 +19,8 @@ dependencies = [
     "fonttools[woff]>=4.50",
     "brotli>=1.1",
     "ddddocr>=1.5",
+    "Pillow>=10.0",
+    "beautifulsoup4>=4.12",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "redis[hiredis]>=5.2",
@@ -57,9 +59,11 @@ Issues = "https://github.com/huasu133/ApexCrawler-/issues"
 [project.entry-points."apexcrawler.engines"]
 vanilla = "apexcrawler.engines.vanilla:VanillaEngine"
 patched = "apexcrawler.engines.patched:PatchedEngine"
+patched_undetected = "apexcrawler.engines.patched_undetected:PatchedUndetectedEngine"
 camoufox = "apexcrawler.engines.camouflaged:CamoufoxEngine"
 cloaked = "apexcrawler.engines.cloaked:CloakedEngine"
 cloaked_v2 = "apexcrawler.engines.cloaked_v2:CloakedV2Engine"
+pydoll = "apexcrawler.engines.pydoll_engine:PyDollEngine"
 qidian = "apexcrawler.engines.qidian:QidianEngine"
 
 [tool.setuptools.packages.find]

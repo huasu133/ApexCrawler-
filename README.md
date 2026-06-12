@@ -1,6 +1,6 @@
 # ApexCrawler
 
-自适应网页爬虫框架 — 专为反爬对抗场景设计。8 引擎自动降级、3 层隐身注入（JS+CDP+C++）、7 阶段管线、WAF 绕过、小说专项下载。
+自适应网页爬虫框架 — 专为反爬对抗场景设计。8 引擎自动降级、3 层隐身注入（JS+CDP+C++）、7 阶段管线、WAF 绕过、小说专项下载（5 站支持）。
 
 ## 快速开始
 
@@ -37,12 +37,20 @@ apex config                                    # 配置管理、面板、Shell
 2. **CDP 层** — DeviceProfile 切换（Chrome 131/Firefox/Safari）
 3. **C++ 层** — CloakBrowser 49 个 Chromium 补丁
 
-### 📚 小说下载（3 站支持）
+### 📚 小说下载（5 站支持）
 
 ```bash
-# 起点中文网（WAF 绕过）
+# 起点中文网（WAF 绕过 + 字体解密）
 apex novel info https://book.qidian.com/info/107580
 apex novel download https://book.qidian.com/info/107580 -c 1-200
+
+# 番茄小说（字体反爬 OCR 解码）
+apex novel info https://fanqienovel.com/page/7069948840148732967
+apex novel download https://fanqienovel.com/page/7069948840148732967
+
+# 纵横中文网（人机验证绕过）
+apex novel info https://www.zongheng.com/detail/1435440
+apex novel download https://www.zongheng.com/detail/1435440 -c 1-50
 
 # 17k 小说网
 apex novel info https://www.17k.com/book/3631088.html

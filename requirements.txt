@@ -10,6 +10,10 @@ pyyaml>=6.0
 fonttools[woff]>=4.50
 brotli>=1.1
 ddddocr>=1.5
+Pillow>=10.0
+
+# HTML parsing
+beautifulsoup4>=4.12
 
 # Data
 pydantic>=2.9
@@ -22,14 +26,20 @@ redis[hiredis]>=5.2
 structlog>=24.4
 rich>=13.9
 
-# AI (optional — install separately: pip install -e ".[ai]")
-# See pyproject.toml [project.optional-dependencies].ai
+# Web dashboard
+uvicorn>=0.30
+fastapi>=0.110
+sse-starlette>=2.0
+
+# Browser engines
+cloakbrowser>=0.3
+
+# AI (optional — pip install -e ".[ai]")
 # openai>=1.55
 # anthropic>=0.39
 # ollama>=0.4
 
-# Dev (optional — install separately: pip install -e ".[dev]")
-# See pyproject.toml [project.optional-dependencies].dev
+# Dev (optional — pip install -e ".[dev]")
 # pytest>=8.3
 # pytest-asyncio>=0.24
 # mypy>=1.11

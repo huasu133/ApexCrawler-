@@ -100,6 +100,24 @@ class ZonghengAdapter(SiteAdapter):
 
         return chapters
 
+    def _get_chrome_paths(self):
+        """Get Chrome user data dir and executable path from env or defaults."""
+        import os, sys
+
+        user_data_dir = os.environ.get(
+            "ZONGHENG_CHROME_USER_DATA",
+            os.path.expanduser("~/Library/Application Support/Google/Chrome/Default")
+            if sys.platform == "darwin"
+            else os.path.expanduser("~/.config/google-chrome/Default"),
+        )
+        executable_path = os.environ.get(
+            "ZONGHENG_CHROME_PATH",
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+            if sys.platform == "darwin"
+            else "/usr/bin/google-chrome",
+        )
+        return user_data_dir, executable_path
+
     def _fetch_chapters_via_playwright(self, book_id: str) -> List[Chapter]:
         """Fetch full chapter list by capturing the bookapi.zongheng.com API response."""
         chapters = []
@@ -109,12 +127,14 @@ class ZonghengAdapter(SiteAdapter):
             logger.warning("Playwright not installed, using limited chapter list")
             return self._fetch_chapters_fallback(book_id)
 
+        user_data_dir, chrome_path = self._get_chrome_paths()
+
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch_persistent_context(
-                    user_data_dir="/Users/songmoxin/Library/Application Support/Google/Chrome/Default",
+                    user_data_dir=user_data_dir,
                     headless=False,
-                    executable_path="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                    executable_path=chrome_path,
                     args=["--no-sandbox"],
                 )
                 try:
@@ -152,7 +172,10 @@ class ZonghengAdapter(SiteAdapter):
                                         word_count=int(word_count),
                                     ))
                 finally:
-                    browser.close()
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
 
         except Exception as e:
             logger.warning("Playwright chapter list failed: %s", e)

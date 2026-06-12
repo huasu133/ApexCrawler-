@@ -55,32 +55,10 @@ def _format_error(message: str) -> str:
 
 
 def _validate_url(url: str) -> str:
-    """Validate URL for SSRF protection.
-
-    Only allows http/https schemes and blocks requests to internal/private IPs.
-    Returns the validated URL or raises ValueError.
-    """
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError(
-            f"URL scheme '{parsed.scheme}' is not allowed. Only http/https are supported."
-        )
-    hostname = parsed.hostname
-    if not hostname:
-        raise ValueError(f"Invalid URL: no hostname found in '{url}'")
-
-    # Resolve hostname to IP address
-    try:
-        ip = ipaddress.ip_address(hostname)
-    except ValueError:
-        # Not a literal IP — resolve via DNS
-        try:
-            resolved = socket.gethostbyname(hostname)
-            ip = ipaddress.ip_address(resolved)
-        except (socket.gaierror, ValueError):
-            raise ValueError(f"Cannot resolve hostname: {hostname}")
-
-    # Block internal/private IP ranges
+    """Validate URL for SSRF protection. Delegates to utils.security."""
+    from ..utils.security import validate_url as _security_validate
+    _security_validate(url)
+    return url
     for net in _BLOCKED_NETWORKS:
         if ip in net:
             raise ValueError(
