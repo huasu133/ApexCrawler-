@@ -1,8 +1,9 @@
 """17k.com novel site adapter — Aliyun WAF bypass via Playwright stealth + CloakBrowser."""
 from __future__ import annotations
 import asyncio
+import json
 import logging
-from typing import List, Optional
+from typing import Any, List, Optional
 from apexcrawler.novel.adapter_base import SiteAdapter, BookInfo, Chapter
 from apexcrawler.novel.engine import register_adapter
 
@@ -38,15 +39,59 @@ def _run_async_safe(coro):
         return asyncio.run(coro)
 
 
-def _build_stealth_js() -> str:
-    """Build stealth JS to inject into Playwright pages."""
-    return """
-    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-    Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
-    Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN','zh','en']});
-    window.chrome = { runtime: {} };
-    Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+_STEALTH_JS = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN','zh','en']});
+window.chrome = { runtime: {} };
 """
+
+
+async def _fetch_via_playwright(url: str, js: str, headless: bool = True) -> str:
+    """使用 Playwright stealth 渲染页面并执行 JS，返回 JSON 字符串结果。"""
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        raise ImportError("playwright not installed")
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=headless,
+            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+        )
+        try:
+            page = await browser.new_page(
+                viewport={"width": 1920, "height": 1080},
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                ),
+                locale="zh-CN",
+            )
+            await page.add_init_script(_STEALTH_JS)
+            await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            await page.wait_for_timeout(3000)
+            result = await page.evaluate(js)
+            return json.dumps(result, ensure_ascii=False) if result else ""
+        finally:
+            await browser.close()
+
+
+async def _fetch_via_cloakbrowser(url: str, js: str, headless: bool = True) -> str:
+    """使用 CloakBrowser 渲染页面并执行 JS，返回 JSON 字符串结果。"""
+    import cloakbrowser
+    browser = await cloakbrowser.launch_async(headless=headless)
+    try:
+        page = await browser.new_page()
+        await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+        await page.wait_for_timeout(3000)
+        result = await page.evaluate(js)
+        return json.dumps(result, ensure_ascii=False) if result else ""
+    finally:
+        try:
+            await browser.close()
+        except Exception:
+            pass
 
 
 @register_adapter
@@ -88,89 +133,66 @@ class Novel17kAdapter(SiteAdapter):
         self._cache[book_id] = book
         return book
 
-    async def _fetch_via_playwright(self, url: str) -> str:
-        """Playwright stealth: 无头/有头均可, 注入反检测JS."""
+    async def _eval_on_page(self, url: str, js: str) -> Any:
+        """智能降级: Playwright stealth → CloakBrowser, 返回JS执行结果."""
+        # 先试 Playwright stealth
         try:
-            from playwright.async_api import async_playwright
-        except ImportError:
-            raise ImportError("playwright not installed")
-
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=self._headless,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-            )
-            context = await browser.new_context(
-                viewport={"width": 1920, "height": 1080},
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-                ),
-                locale="zh-CN",
-            )
-            page = await context.new_page()
-            await page.add_init_script(_build_stealth_js())
-            await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-            await page.wait_for_timeout(5000)
-            html = await page.content()
-            await browser.close()
-            return html
-
-    async def _fetch_via_cloakbrowser(self, url: str) -> str:
-        """CloakBrowser兜底: 有头模式, 过强WAF."""
-        import cloakbrowser
-        browser = await cloakbrowser.launch_async(headless=self._headless)
-        try:
-            page = await browser.new_page()
-            await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-            await page.wait_for_timeout(3000)
-            html = await page.content()
-            return html
-        finally:
-            try:
-                await browser.close()
-            except Exception:
-                pass
-
-    async def _fetch_page(self, url: str) -> str:
-        """智能降级: Playwright stealth → CloakBrowser."""
-        try:
-            html = await self._fetch_via_playwright(url)
-            # 检测是否有WAF拦截
-            if html and "人机验证" not in html and len(html) > 500:
-                return html
-            logger.info("Playwright stealth 被WAF拦截, 降级到CloakBrowser...")
+            result = await _fetch_via_playwright(url, js, headless=self._headless)
+            if result and len(result) > 10:
+                return json.loads(result)
         except Exception as e:
-            logger.warning("Playwright stealth 失败: %s, 降级到CloakBrowser...", e)
-        return await self._fetch_via_cloakbrowser(url)
+            logger.warning("Playwright stealth 失败: %s, 降级到 CloakBrowser...", e)
+
+        # 兜底 CloakBrowser
+        try:
+            result = await _fetch_via_cloakbrowser(url, js, headless=self._headless)
+            if result:
+                return json.loads(result)
+        except Exception as e:
+            logger.warning("CloakBrowser 也失败: %s", e)
+
+        return None
 
     async def _fetch_chapter_list(self, book_id: int) -> List[Chapter]:
-        """Fetch chapter list — Playwright stealth优先, CloakBrowser兜底."""
+        """Fetch chapter list — 浏览器渲染提取."""
+        js = f"""() => {{
+            const links = Array.from(document.querySelectorAll('a[href*="/chapter/{book_id}/"]'));
+            if (links.length === 0) {{
+                return Array.from(document.querySelectorAll('a[href*="/chapter/"]'))
+                    .filter(a => a.href.includes('{book_id}'))
+                    .map((a, i) => ({{ index: i + 1, title: a.innerText.trim(), href: a.href }}));
+            }}
+            return links.map((a, i) => ({{
+                index: i + 1,
+                title: a.innerText.trim(),
+                href: a.href
+            }}));
+        }}"""
+
         url = f"https://www.17k.com/list/{book_id}.html"
-        html = await self._fetch_page(url)
+        chapters_data = await self._eval_on_page(url, js)
 
-        chapters = []
-        import re
+        result = []
+        if chapters_data and isinstance(chapters_data, list):
+            import re
+            for ch in chapters_data:
+                title = ch.get("title", "") or ""
+                href = ch.get("href", "") or ""
+                ch_id = 0
+                if href:
+                    m = re.search(r"/chapter/\d+/(\d+)", href)
+                    if m:
+                        ch_id = int(m.group(1))
+                result.append(Chapter(
+                    index=ch.get("index", 0),
+                    title=title,
+                    chapter_id=str(ch_id),
+                    url=href,
+                    is_vip=False,
+                ))
 
-        # 从HTML提取章节链接
-        links = re.findall(r'href="([^"]*chapter/%d/(\d+)[^"]*)"[^>]*>([^<]+)<' % book_id, html)
-        seen = set()
-        for href, ch_id, title in links:
-            title = title.strip()
-            if ch_id in seen or not title:
-                continue
-            seen.add(ch_id)
-            full_url = href if href.startswith("http") else f"https://www.17k.com{href}"
-            chapters.append(Chapter(
-                index=len(chapters) + 1,
-                title=title,
-                chapter_id=ch_id,
-                url=full_url,
-                is_vip=False,
-            ))
-
-        logger.info("17k 章节: %d 章 (book_id=%d)", len(chapters), book_id)
-        return chapters
+        logger.info("17k 章节: %d 章 (book_id=%d)", len(result), book_id)
+        return result
 
     def fetch_chapter(self, chapter: Chapter) -> str:
         return _run_async_safe(self._fetch_chapter_text(chapter))
@@ -180,24 +202,19 @@ class Novel17kAdapter(SiteAdapter):
         if not url:
             return ""
 
-        html = await self._fetch_page(url)
+        js = """() => {
+            const sel = document.querySelector('.content');
+            if (sel) {
+                sel.querySelectorAll('script, style, .chapter-tip, .chapter-nav, .ad, [class*="ad-"], [class*="tip"], .copy, .report, .author-say').forEach(e => e.remove());
+                return sel.innerText.trim();
+            }
+            const fallback = document.querySelector('#content, .read-content, .text, .chapter-content, .article-content');
+            if (fallback) return fallback.innerText.trim();
+            return document.body.innerText.trim();
+        }"""
 
-        # 提取正文内容
-        import re
-        content_match = re.search(r'<div class="content">(.*?)</div>', html, re.DOTALL)
-        if content_match:
-            text = re.sub(r'<[^>]+>', '', content_match.group(1))
-            text = re.sub(r'\s+', '\n', text).strip()
-            if len(text) > 100:
-                return text
-
-        # 兜底: 提取所有段落
-        paras = re.findall(r'<p>(.*?)</p>', html, re.DOTALL)
-        texts = [re.sub(r'<[^>]+>', '', p).strip() for p in paras if len(p) > 20]
-        if texts:
-            return '\n'.join(texts)
-
-        return ""
+        text = await self._eval_on_page(url, js)
+        return str(text or "")
 
     def download(self, book: BookInfo, chapters: List[Chapter], output: str = "txt") -> str:
         import os, time
