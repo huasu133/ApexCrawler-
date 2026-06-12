@@ -311,9 +311,7 @@ class QidianEngine(BaseEngine):
 
         # 反检测状态
         self._fetch_counter = 0          # 当前会话已爬章数
-        self._session_start_time = 0.0   # 当前会话开始时间戳
-        self._cookie_rotate_chapter_limit = 150    # 每150章换Cookie
-        self._cookie_rotate_time_limit = 7200      # 或2小时(7200秒)换Cookie
+        self._cookie_rotate_chapter_limit = 150    # 每150章换Cookie（含阅读模拟每批自然数小时）
 
         # CookieJarStore for persistent cookie storage
         self._cookie_store = CookieJarStore()
@@ -685,7 +683,7 @@ class QidianEngine(BaseEngine):
                 return []
 
         data = resp.get("json") or {}
-        chapters: List[Chapter] = []
+        chapters = []  # 复用 line 627 的声明
 
         # 尝试从 API JSON 解析
         vs = data.get("data", {}).get("vs", [])
@@ -947,19 +945,18 @@ class QidianEngine(BaseEngine):
         Returns:
             填充了正文的 Chapter 列表
         """
-        # WAF 拦截 curl_cffi → 直接使用浏览器批量渲染
+        # 批量走浏览器渲染（更快，统一WAF绕过）
         if len(chapters) > 1:
             return _run_async(self._batch_fetch_via_browser(chapters))
 
-        # 单章走常规路径
-        if len(chapters) <= 1:
-            results = []
-            for ch in chapters:
-                if not ch.is_vip:
-                    results.append(self.fetch_chapter(ch))
-                else:
-                    results.append(ch)
-            return results
+        # 单章走常规路径（curl_cffi直接请求）
+        results = []
+        for ch in chapters:
+            if not ch.is_vip:
+                results.append(self.fetch_chapter(ch))
+            else:
+                results.append(ch)
+        return results
 
     async def _batch_fetch_via_browser(self, chapters: List[Chapter]) -> List[Chapter]:
         """
@@ -1181,7 +1178,6 @@ class QidianEngine(BaseEngine):
                 }
 
             # 请求头微随机化：每次引擎初始化随机选一套头，避免固定指纹
-            import random
             ua_variants = [
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",

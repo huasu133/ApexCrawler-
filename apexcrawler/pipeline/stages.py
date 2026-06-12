@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import httpx
 import json
 import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..behavior.timing import TimingScheduler
 from ..core.context import PipelineContext
 from ..core.exceptions import ConfigurationError, ExtractionError
 from ..decision.engine import DecisionEngine
@@ -357,6 +357,7 @@ class ExtractStage:
             if self._conn_manager is not None:
                 proxy = await self._conn_manager.get_proxy(ctx.target_url)
 
+            import httpx
             async with httpx.AsyncClient(
                 timeout=15, follow_redirects=True,
                 headers=headers,
