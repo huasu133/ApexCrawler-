@@ -47,8 +47,9 @@ class Novel17kAdapter(SiteAdapter):
         r"(?:www\.)?17k\.com/chapter/(\d+)/(\d+)",
     ]
 
-    def __init__(self):
+    def __init__(self, headless: bool = True):
         self._cache: dict[int, BookInfo] = {}
+        self._headless = headless
 
     def _extract_book_id(self, url: str) -> int:
         import re
@@ -80,13 +81,12 @@ class Novel17kAdapter(SiteAdapter):
         """Fetch chapter list from 17k.com via CloakBrowser."""
         import cloakbrowser
 
-        browser = await cloakbrowser.launch_async(headless=False)
+        browser = await cloakbrowser.launch_async(headless=self._headless)
         try:
             page = await browser.new_page()
             url = f"https://www.17k.com/list/{book_id}.html"
             await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-            await page.wait_for_load_state("networkidle", timeout=30_000)
-            await asyncio.sleep(3)
+            await page.wait_for_timeout(3000)
 
             chapters = await page.evaluate(f"""() => {{
                 const links = Array.from(document.querySelectorAll('a[href*="/chapter/{book_id}/"]'));
@@ -125,7 +125,10 @@ class Novel17kAdapter(SiteAdapter):
             return result
 
         finally:
-            await browser.close()
+            try:
+                await browser.close()
+            except Exception:
+                pass
 
     def fetch_chapter(self, chapter: Chapter) -> str:
         return _run_async_safe(self._fetch_chapter_text(chapter))
@@ -136,12 +139,11 @@ class Novel17kAdapter(SiteAdapter):
         if not url:
             return ""
 
-        browser = await cloakbrowser.launch_async(headless=False)
+        browser = await cloakbrowser.launch_async(headless=self._headless)
         try:
             page = await browser.new_page()
             await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-            await page.wait_for_load_state("networkidle", timeout=30_000)
-            await asyncio.sleep(2)
+            await page.wait_for_timeout(3000)
 
             text = await page.evaluate("""() => {
                 const sel = document.querySelector('.content');
@@ -156,7 +158,10 @@ class Novel17kAdapter(SiteAdapter):
             }""")
             return text or ""
         finally:
-            await browser.close()
+            try:
+                await browser.close()
+            except Exception:
+                pass
 
     def download(self, book: BookInfo, chapters: List[Chapter], output: str = "txt") -> str:
         import os, time
