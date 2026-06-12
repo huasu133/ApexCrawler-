@@ -1,4 +1,4 @@
-"""Zongheng (纵横中文网) novel site adapter — using curl_cffi for CAPTCHA bypass."""
+"""Zongheng (纵横中文网) novel site adapter — hybrid Playwright + curl_cffi."""
 from __future__ import annotations
 import logging
 import re
@@ -11,15 +11,10 @@ logger = logging.getLogger(__name__)
 
 @register_adapter
 class ZonghengAdapter(SiteAdapter):
-    """Adapter for zongheng.com — Baidu's novel platform.
+    """Adapter for zongheng.com — hybrid approach:
 
-    Uses curl_cffi for TLS fingerprint impersonation to bypass CAPTCHA.
-    Mobile site (m.zongheng.com) is used for chapter content as it has
-    server-rendered content without JavaScript dependency.
-
-    URL patterns:
-      Book info (main):  https://www.zongheng.com/detail/{book_id}
-      Chapter (mobile):  https://m.zongheng.com/chapter/{book_id}/{chapter_id}.html
+    - Chapter list: Playwright + system Chrome profile (user cookies bypass CAPTCHA)
+    - Chapter content: curl_cffi + mobile site (m.zongheng.com, server-rendered)
     """
 
     URL_PATTERNS = [
@@ -27,6 +22,8 @@ class ZonghengAdapter(SiteAdapter):
         r"(?:www\.)?zongheng\.com/chapter/(\d+)/(\d+)",
         r"huayu\.zongheng\.com/book/(\d+)",
     ]
+
+    _cached_chapters: dict[str, List[Chapter]] = {}
 
     def __init__(self):
         self._session = None
@@ -40,8 +37,6 @@ class ZonghengAdapter(SiteAdapter):
             self._session = curl_requests.Session()
             self._session.headers.update({
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             })
         return self._session
 
@@ -59,59 +54,125 @@ class ZonghengAdapter(SiteAdapter):
         book_id = self._extract_book_id(url)
         s = self._get_session()
 
-        # Build detail page URL
-        if "huayu.zongheng.com" in url:
-            detail_url = f"https://huayu.zongheng.com/book/{book_id}.html"
-        else:
-            detail_url = f"https://www.zongheng.com/detail/{book_id}"
-
-        resp = s.get(detail_url, impersonate="chrome131", timeout=15)
-        resp.encoding = "utf-8"
-        html = resp.text
-
-        # Extract title from <title> tag
-        title = f"Book {book_id}"
-        title_match = re.search(r'<title>(.*?)最新章节.*?</title>', html)
-        if title_match:
-            title = title_match.group(1).strip()
-        else:
-            title_match = re.search(r'<title>(.*?)</title>', html)
-            if title_match:
-                title = title_match.group(1).strip()
-
-        # Extract author from NUXT data or page text
-        author = ""
-        for p in [r'"author_name"\s*:\s*"([^"]+)"', r'作者[：:]\s*([^<\n&]{2,20})',
-                   r'"nickName"\s*:\s*"([^"]+)"', r'"author"\s*:\s*"([^"]+)"']:
-            m = re.search(p, html)
-            if m:
-                author = m.group(1).strip()
-                break
-
-        # Try to get chapter list from mobile catalog page
-        chapters = self._fetch_chapters(book_id)
-
-        return BookInfo(book_id=book_id, title=title, author=author, chapters=chapters)
-
-    def _fetch_chapters(self, book_id: str) -> List[Chapter]:
-        """Fetch chapter list — extract what we can from static HTML.
-
-        Zongheng uses client-side rendering for the full chapter list.
-        We can extract first and latest chapter IDs from the NUXT data.
-        For the full list, browser rendering (Playwright/CloakBrowser) is needed.
-        """
-        s = self._get_session()
-        chapters = []
-
+        # Get detail page for title/author
         detail_url = f"https://www.zongheng.com/detail/{book_id}"
         resp = s.get(detail_url, impersonate="chrome131", timeout=15)
         resp.encoding = "utf-8"
         html = resp.text
 
-        # Extract chapter info from NUXT/page data
+        # Extract title
+        title = f"Book {book_id}"
+        m = re.search(r'<title>(.*?)最新章节.*?</title>', html)
+        if m:
+            title = m.group(1).strip()
+        else:
+            m = re.search(r'<title>(.*?)</title>', html)
+            if m:
+                title = m.group(1).strip()
+
+        # Extract author
+        author = ""
+        for p in [r'"author_name"\s*:\s*"([^"]+)"', r'"nickName"\s*:\s*"([^"]+)"', r'"author"\s*:\s*"([^"]+)"']:
+            m = re.search(p, html)
+            if m:
+                author = m.group(1).strip()
+                break
+        if not author:
+            m = re.search(r'作者[：:]\s*([^<\n&]{2,20})', html)
+            if m:
+                author = m.group(1).strip()
+
+        # Get chapter list (cached or via Playwright)
+        chapters = self._get_chapters(book_id)
+
+        return BookInfo(book_id=book_id, title=title, author=author, chapters=chapters)
+
+    def _get_chapters(self, book_id: str) -> List[Chapter]:
+        """Get chapter list — from cache or via Playwright with user Chrome profile."""
+        if book_id in self._cached_chapters:
+            return self._cached_chapters[book_id]
+
+        chapters = self._fetch_chapters_via_playwright(book_id)
+
+        # Cache for this session
+        if chapters:
+            self._cached_chapters[book_id] = chapters
+
+        return chapters
+
+    def _fetch_chapters_via_playwright(self, book_id: str) -> List[Chapter]:
+        """Fetch full chapter list by capturing the bookapi.zongheng.com API response."""
+        chapters = []
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            logger.warning("Playwright not installed, using limited chapter list")
+            return self._fetch_chapters_fallback(book_id)
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch_persistent_context(
+                    user_data_dir="/Users/songmoxin/Library/Application Support/Google/Chrome/Default",
+                    headless=False,
+                    executable_path="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                    args=["--no-sandbox"],
+                )
+                try:
+                    page = browser.pages[0] if browser.pages else browser.new_page()
+
+                    # Capture the chapter list API response
+                    api_response = [None]
+                    def handle_response(response):
+                        if "getChapterList" in response.url:
+                            api_response[0] = response
+                    page.on("response", handle_response)
+
+                    # Navigate and click catalog tab to trigger API call
+                    page.goto(f"https://www.zongheng.com/detail/{book_id}",
+                              wait_until="domcontentloaded", timeout=30000)
+                    page.wait_for_timeout(2000)
+                    page.click("text=\u76ee\u5f55", timeout=5000)
+                    page.wait_for_timeout(3000)
+
+                    # Parse the captured API response
+                    if api_response[0]:
+                        data = api_response[0].json()
+                        chapter_lists = data.get("result", {}).get("chapterList", [])
+                        for volume in chapter_lists:
+                            for c in volume.get("chapterViewList", []):
+                                ch_id = str(c.get("chapterId", ""))
+                                ch_name = c.get("chapterName", "")
+                                word_count = c.get("wordNums", 0)
+                                if ch_id and ch_name:
+                                    chapters.append(Chapter(
+                                        index=len(chapters) + 1,
+                                        title=ch_name,
+                                        chapter_id=ch_id,
+                                        url=f"https://m.zongheng.com/chapter/{book_id}/{ch_id}.html",
+                                        word_count=int(word_count),
+                                    ))
+                finally:
+                    browser.close()
+
+        except Exception as e:
+            logger.warning("Playwright chapter list failed: %s", e)
+            return self._fetch_chapters_fallback(book_id)
+
+        logger.info("纵横章节列表: %d 章 (via Playwright API)", len(chapters))
+        return chapters
+
+    def _fetch_chapters_fallback(self, book_id: str) -> List[Chapter]:
+        """Fallback: extract first/last chapter from page HTML."""
+        chapters = []
+        s = self._get_session()
+        resp = s.get(f"https://www.zongheng.com/detail/{book_id}", impersonate="chrome131", timeout=15)
+        resp.encoding = "utf-8"
+        html = resp.text
+
         first_name = ""
         latest_id = ""
         latest_name = ""
+        ch_ids = re.findall(r'/chapter/\d+/(\d+)', html)
 
         m = re.search(r'firstChapterName[:\s]*"([^"]+)"', html)
         if m:
@@ -123,40 +184,26 @@ class ZonghengAdapter(SiteAdapter):
         if m:
             latest_name = m.group(1)
 
-        # Find first chapter ID from chapter URLs in the page
-        ch_ids = re.findall(r'/chapter/\d+/(\d+)', html)
         first_id = ch_ids[0] if ch_ids else ""
-
-        # Build what we can
         if first_id:
-            chapters.append(Chapter(
-                index=1,
-                title=first_name or f"\u7b2c1\u7ae0",
-                chapter_id=first_id,
-                url=f"https://m.zongheng.com/chapter/{book_id}/{first_id}.html",
-            ))
-
+            chapters.append(Chapter(index=1, title=first_name or "\u7b2c1\u7ae0",
+                                     chapter_id=first_id,
+                                     url=f"https://m.zongheng.com/chapter/{book_id}/{first_id}.html"))
         if latest_id and latest_id != first_id:
-            chapters.append(Chapter(
-                index=999,
-                title=latest_name or f"\u6700\u65b0\u7ae0\u8282",
-                chapter_id=latest_id,
-                url=f"https://m.zongheng.com/chapter/{book_id}/{latest_id}.html",
-            ))
-
-        logger.info("纵横章节: first=%s(%s), latest=%s(%s) - 完整列表需浏览器渲染",
-                     first_id, first_name, latest_id, latest_name)
+            chapters.append(Chapter(index=999, title=latest_name or "\u6700\u65b0\u7ae0\u8282",
+                                     chapter_id=latest_id,
+                                     url=f"https://m.zongheng.com/chapter/{book_id}/{latest_id}.html"))
         return chapters
 
     def fetch_chapter(self, chapter: Chapter) -> str:
-        """Fetch chapter content from mobile site (server-rendered, no CAPTCHA)."""
+        """Fetch chapter content from mobile site via curl_cffi."""
         url = chapter.url
         if not url:
             return ""
 
-        # Ensure we use mobile URL
-        if "www.zongheng.com" in url:
-            url = url.replace("www.zongheng.com", "m.zongheng.com")
+        # Ensure mobile URL
+        if "www.zongheng.com" in url or "read.zongheng.com" in url:
+            url = re.sub(r'(www|read)\.zongheng\.com', 'm.zongheng.com', url)
 
         try:
             s = self._get_session()
@@ -167,43 +214,39 @@ class ZonghengAdapter(SiteAdapter):
             logger.warning("获取章节失败 %s: %s", url, e)
             return ""
 
-        # Extract content from mobile page
-        # Mobile page has server-rendered content in various containers
-        content_selectors = [
+        # Extract content from various container patterns
+        for pattern in [
             r'<div[^>]*class="[^"]*content[^"]*"[^>]*>(.*?)</div>',
             r'<div[^>]*id="content"[^>]*>(.*?)</div>',
             r'<div[^>]*class="[^"]*chapter-content[^"]*"[^>]*>(.*?)</div>',
-            r'<article[^>]*>(.*?)</article>',
             r'<div[^>]*class="[^"]*read-content[^"]*"[^>]*>(.*?)</div>',
-        ]
-
-        for pattern in content_selectors:
+            r'<article[^>]*>(.*?)</article>',
+        ]:
             m = re.search(pattern, html, re.DOTALL)
             if m:
                 text = re.sub(r'<[^>]+>', '', m.group(1))
                 text = re.sub(r'\s*\n\s*', '\n', text).strip()
                 if len(text) > 100:
-                    # Clean up noise
-                    text = re.sub(
-                        r'(?:^|\n)\s*(?:本章完|请记住本书首发域名|一秒记住|天才一秒记住|'
-                        r'手机用户请浏览|提示：|推荐：|https?://\S+|'
-                        r'纵横中文网.*?www\.zongheng\.com|快捷键|听书|'
-                        r'下一章|上一章|返回目录)\s*(?:\n|$)',
-                        '', text, flags=re.IGNORECASE
-                    )
-                    return text.strip()
+                    text = self._clean_content(text)
+                    return text
 
-        # Fallback: extract substantial paragraphs
+        # Fallback: extract paragraphs
         paragraphs = re.findall(r'<p[^>]*>(.*?)</p>', html, re.DOTALL)
-        texts = []
-        for p in paragraphs:
-            t = re.sub(r'<[^>]+>', '', p).strip()
-            if len(t) > 10:
-                texts.append(t)
+        texts = [re.sub(r'<[^>]+>', '', p).strip() for p in paragraphs if len(re.sub(r'<[^>]+>', '', p).strip()) > 10]
         if texts:
             return "\n".join(texts)
 
         return ""
+
+    def _clean_content(self, text: str) -> str:
+        text = re.sub(
+            r'(?:^|\n)\s*(?:本章完|请记住本书首发域名|一秒记住|天才一秒记住|'
+            r'手机用户请浏览|提示：|推荐：|https?://\S+|'
+            r'纵横中文网.*?www\.zongheng\.com|快捷键|听书|'
+            r'下一章|上一章|返回目录)\s*(?:\n|$)',
+            '', text, flags=re.IGNORECASE
+        )
+        return text.strip()
 
     def download(self, book: BookInfo, chapters: List[Chapter], output: str = "txt") -> str:
         import os
