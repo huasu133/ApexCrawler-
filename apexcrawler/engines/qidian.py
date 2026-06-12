@@ -853,6 +853,32 @@ class QidianEngine(BaseEngine):
         finally:
             await engine.close()
 
+    async def _fetch_chapter_via_playwright(self, url: str) -> str:
+        """使用 Playwright stealth 渲染章节页面（无头/有头均可）。"""
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            raise ImportError("playwright not installed")
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=self.headless,
+                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+            )
+            try:
+                page = await browser.new_page(
+                    viewport={"width": 1920, "height": 1080},
+                    user_agent=self.DEFAULT_HEADERS["User-Agent"],
+                    locale="zh-CN",
+                )
+                await self._inject_stealth_js(page)
+                await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                await page.wait_for_timeout(3000)
+                html = await page.content()
+                return html or ""
+            finally:
+                await browser.close()
+
     async def _fetch_chapter_via_browser(self, url: str) -> str:
         """使用 CloakBrowser 渲染章节页面并提取正文。"""
         import cloakbrowser
@@ -912,7 +938,26 @@ class QidianEngine(BaseEngine):
                 resp["status_code"],
                 chapter_info.chapter_id,
             )
-            # 使用 CloakBrowser 渲染章节页面
+            # 降级路径1: Playwright stealth
+            try:
+                logger.info("curl_cffi 失败, 尝试 Playwright stealth...")
+                pw_html = _run_async(self._fetch_chapter_via_playwright(url))
+                if pw_html:
+                    text, metadata = self._extract_full(pw_html)
+                    if text and len(text) > 100:
+                        chapter_info.content = text
+                        if metadata.get("title"):
+                            chapter_info.title = metadata["title"]
+                        chapter_info.fetched_at = datetime.now()
+                        if not chapter_info.word_count and text:
+                            chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", text))
+                            chapter_info.word_count = chinese_chars
+                        logger.info("Playwright stealth 获取章节成功: %d 字", chapter_info.word_count)
+                        return chapter_info
+            except Exception as e:
+                logger.warning("Playwright stealth 获取章节失败: %s, 降级到 CloakBrowser...", e)
+
+            # 降级路径2: CloakBrowser
             try:
                 import cloakbrowser
                 browser_html = _run_async(self._fetch_chapter_via_browser(url))
