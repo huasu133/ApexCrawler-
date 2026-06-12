@@ -216,7 +216,7 @@ def _run_quick_get(ctx, url, engine, proxy, timeout, llm, instruction,
     import re
     _validate_url(url)
     # Detect novel platform URLs
-    novel_domains = ["qidian.com", "fanqienovel.com", "jinjiang.com", "biquge", "69shu"]
+    novel_domains = ["qidian.com", "fanqienovel.com", "zongheng.com", "jinjiang.com", "biquge", "69shu"]
     if any(d in url for d in novel_domains):
         try:
             ne = NovelEngine()
@@ -1186,7 +1186,7 @@ def inspect_cmd(url: str, headless: bool, timeout: int, json_output: bool) -> No
 
 @cli.group()
 def novel() -> None:
-    """小说爬取 — 支持起点/番茄/笔趣阁等站点。"""
+    """小说爬取 — 支持起点/番茄/纵横/笔趣阁等站点。"""
     pass
 
 

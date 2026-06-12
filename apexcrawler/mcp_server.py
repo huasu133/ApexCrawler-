@@ -592,7 +592,7 @@ async def get_task(task_id: str) -> str:
 
 @server.tool(
     name="novel_info",
-    description="Get novel information: table of contents, chapter count, free/paid status. Supports Qidian, Fanqie, Biquge, etc.",
+    description="Get novel information: table of contents, chapter count, free/paid status. Supports Qidian, Fanqie, Zongheng, Biquge, etc.",
 )
 async def novel_info(url: str) -> str:
     import json, logging

@@ -112,8 +112,17 @@ class FontDecoder:
         """
         mapping: Dict[str, str] = {}
 
+        # Manual fallback mappings for common OCR misses in ByteDance fonts
+        _MANUAL_FALLBACK = {
+            0xE434: "\u5c71",  # 山
+            0xE43F: "\u53eb",  # 叫
+            0xE490: "\u6bd4",  # 比
+            0xE4DE: "\u4e00",  # 一
+            0xE53C: "\u4e4b",  # 之
+        }
+
         try:
-            from fonttools.ttLib import TTFont
+            from fontTools.ttLib import TTFont
             font = TTFont(font_path)
             cmap = font.getBestCmap()
 
@@ -129,49 +138,48 @@ class FontDecoder:
                     mapping[char] = char
 
             # Level 2: OCR-based decoding for custom glyphs
-            # Render each glyph and OCR it
+            # Works with both TrueType (glyf) and CFF fonts
             try:
                 from PIL import Image, ImageDraw, ImageFont
                 if self._ocr is None:
                     import ddddocr
                     self._ocr = ddddocr.DdddOcr()
 
-                # Find glyph outlines
-                glyf_table = font.get("glyf")
-                if glyf_table:
-                    pil_font = ImageFont.truetype(font_path, 48)
-                    for char_code, glyph_name in cmap.items():
-                        if char_code < 0x20:
+                pil_font = ImageFont.truetype(font_path, 48)
+                for char_code, glyph_name in cmap.items():
+                    if char_code < 0x20:
+                        continue
+                    try:
+                        char = chr(char_code)
+                        # Render glyph to image using PIL (works for both glyf and CFF)
+                        img = Image.new("L", (64, 64), 255)
+                        draw = ImageDraw.Draw(img)
+                        bbox = draw.textbbox((0, 0), char, font=pil_font)
+                        w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+                        if w < 4 or h < 4:
                             continue
-                        try:
-                            glyph = glyf_table[glyph_name]
-                            if glyph.numberOfContours == 0:
-                                continue
 
-                            # Render glyph to image
-                            char = chr(char_code)
-                            img = Image.new("L", (64, 64), 255)
-                            draw = ImageDraw.Draw(img)
-                            bbox = draw.textbbox((0, 0), char, font=pil_font)
-                            w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-                            if w < 4 or h < 4:
-                                continue
+                        img2 = Image.new("L", (w + 8, h + 8), 255)
+                        draw2 = ImageDraw.Draw(img2)
+                        draw2.text((4, 4), char, font=pil_font, fill=0)
 
-                            img2 = Image.new("L", (w + 8, h + 8), 255)
-                            draw2 = ImageDraw.Draw(img2)
-                            draw2.text((4, 4), char, font=pil_font, fill=0)
-
-                            result = self._ocr.classification(img2)
-                            if result and result != char and len(result) == 1:
-                                mapping[char] = result
-                        except Exception:
-                            continue
+                        result = self._ocr.classification(img2)
+                        if result and result != char and len(result) == 1:
+                            mapping[char] = result
+                    except Exception:
+                        continue
             except ImportError:
                 logger.debug("OCR dependencies (PIL/ddddocr) not available, skipping")
 
             font.close()
         except Exception as e:
             logger.warning("Font processing failed: %s", e)
+
+        # Apply manual fallback for common OCR misses
+        for code, char in _MANUAL_FALLBACK.items():
+            pua_char = chr(code)
+            if pua_char not in mapping:
+                mapping[pua_char] = char
 
         return mapping
 
