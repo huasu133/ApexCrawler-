@@ -38,7 +38,32 @@ class ZonghengAdapter(SiteAdapter):
             self._session.headers.update({
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
             })
+            # 注入系统Chrome的登录Cookie（用于访问付费章节）
+            self._inject_chrome_cookies()
         return self._session
+
+    def _inject_chrome_cookies(self):
+        """从系统Chrome用户数据注入.zongheng.com的Cookie到curl_cffi会话。"""
+        import os, http.cookiejar
+        cookie_file = os.path.expanduser(
+            "~/Library/Application Support/Google/Chrome/Default/Cookies"
+        )
+        if not os.path.exists(cookie_file):
+            logger.debug("Chrome cookie文件不存在, 跳过注入")
+            return
+        try:
+            import sqlite3
+            conn = sqlite3.connect(cookie_file)
+            cursor = conn.cursor()
+            rows = cursor.execute(
+                "SELECT name, value FROM cookies WHERE host_key LIKE '%zongheng.com%'"
+            ).fetchall()
+            conn.close()
+            for name, value in rows:
+                self._session.cookies.set(name, value, domain=".zongheng.com")
+            logger.info("已注入 %d 个 Chrome Cookie (纵横登录态)", len(rows))
+        except Exception as e:
+            logger.warning("注入Chrome Cookie失败: %s", e)
 
     def match(self, url: str) -> bool:
         return any(re.search(p, url) for p in self.URL_PATTERNS)
@@ -163,6 +188,7 @@ class ZonghengAdapter(SiteAdapter):
                                 ch_id = str(c.get("chapterId", ""))
                                 ch_name = c.get("chapterName", "")
                                 word_count = c.get("wordNums", 0)
+                                ch_price = c.get("price", 0)  # 纵横币, >0为付费章节
                                 if ch_id and ch_name:
                                     chapters.append(Chapter(
                                         index=len(chapters) + 1,
@@ -170,6 +196,7 @@ class ZonghengAdapter(SiteAdapter):
                                         chapter_id=ch_id,
                                         url=f"https://m.zongheng.com/chapter/{book_id}/{ch_id}.html",
                                         word_count=int(word_count),
+                                        is_vip=(ch_price > 0),  # price>0为付费
                                     ))
                 finally:
                     try:
