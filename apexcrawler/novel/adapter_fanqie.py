@@ -263,8 +263,11 @@ class FanqieAdapter(SiteAdapter):
         total = len(chapters)
         for i, ch in enumerate(chapters):
             text = self.fetch_chapter(ch)
-            content_lines.append(f"\n\n\u7b2c{ch.index}\u7ae0 {ch.title}\n\n{text}\n")
-            logger.info("\u4e0b\u8f7d\u8fdb\u5ea6: %d/%d (%.0f%%)", i + 1, total, (i + 1) / total * 100)
+            content_lines.append(f"\n\n第{ch.index}章 {ch.title}\n\n{text}\n")
+            logger.info("下载进度: %d/%d (%.0f%%)", i + 1, total, (i + 1) / total * 100)
+            wc = len(text)
+            self.simulate_read_delay(wc)
+            self.simulate_inter_chapter_delay()
         path = os.path.join(os.getcwd(), filename)
         with open(path, "w", encoding="utf-8") as f:
             f.write("".join(content_lines))

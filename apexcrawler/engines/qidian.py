@@ -309,6 +309,12 @@ class QidianEngine(BaseEngine):
         self._storage_dir = Path(storage_dir or base_dir / "qidian" / "output")
         self._storage_dir.mkdir(parents=True, exist_ok=True)
 
+        # 反检测状态
+        self._fetch_counter = 0          # 当前会话已爬章数
+        self._session_start_time = 0.0   # 当前会话开始时间戳
+        self._cookie_rotate_chapter_limit = 150    # 每150章换Cookie
+        self._cookie_rotate_time_limit = 7200      # 或2小时(7200秒)换Cookie
+
         # CookieJarStore for persistent cookie storage
         self._cookie_store = CookieJarStore()
         self._page_html = ""  # WAF 绕过时顺便获取的书籍页面 HTML
@@ -958,63 +964,86 @@ class QidianEngine(BaseEngine):
     async def _batch_fetch_via_browser(self, chapters: List[Chapter]) -> List[Chapter]:
         """
         使用单个 CloakBrowser 会话批量获取章节内容，避免每章启动一次浏览器。
+        每 150 章或 2 小时自动轮换 Cookie（模拟跨天阅读）。
         """
         import cloakbrowser
         logger.info("启动 CloakBrowser 批量获取 %d 章...", len(chapters))
 
-        browser = await cloakbrowser.launch_async(headless=False)
-        try:
-            context = await browser.new_context()
+        total = len(chapters)
+        results: List[Chapter] = []
 
-            # 注入已保存的 Cookie
-            stored = self._cookie_store.load()
-            if stored:
-                for c in stored:
+        # 将章节拆分为批次（每批次 ≤ COOKIE_ROTATE_LIMIT 章）
+        batch_size = self._cookie_rotate_chapter_limit
+        batches = [chapters[i:i + batch_size] for i in range(0, total, batch_size)]
+
+        for batch_idx, batch in enumerate(batches):
+            # Cookie 轮换：每批新开浏览器 → 模拟"新的一天"
+            if batch_idx > 0:
+                logger.info("Cookie 轮换: 第 %d 批/%d 批 (%d 章)",
+                            batch_idx + 1, len(batches), len(batch))
+
+            # 启动浏览器（会从存储加载已保存的 Cookie）
+            browser = await cloakbrowser.launch_async(headless=False)
+            try:
+                context = await browser.new_context()
+
+                # 注入已保存的 Cookie
+                stored = self._cookie_store.load()
+                if stored:
+                    for c in stored:
+                        try:
+                            await context.add_cookies([{
+                                "name": c["name"],
+                                "value": c["value"],
+                                "domain": ".qidian.com",
+                                "path": "/",
+                            }])
+                        except Exception:
+                            pass
+                    logger.debug("已注入 %d 个 Cookie", len(stored))
+
+                page = await context.new_page()
+
+                for i, ch in enumerate(batch):
+                    if ch.is_vip:
+                        results.append(ch)
+                        continue
+
+                    url = ch.url or self.CHAPTER_URL_TEMPLATE.format(
+                        book_id=ch.book_id, chapter_id=ch.chapter_id
+                    )
                     try:
-                        await context.add_cookies([{
-                            "name": c["name"],
-                            "value": c["value"],
-                            "domain": ".qidian.com",
-                            "path": "/",
-                        }])
-                    except Exception:
-                        pass
-                logger.debug("已注入 %d 个 Cookie", len(stored))
+                        await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                        await page.wait_for_load_state("networkidle", timeout=30_000)
+                        await asyncio.sleep(2)
 
-            page = await context.new_page()
-            total = len(chapters)
+                        html = await page.content()
+                        if html:
+                            text, _ = self._extract_full(html)
+                            ch.content = text or ""
+                        ch.fetched_at = datetime.now()
+                        if ch.content:
+                            chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", ch.content))
+                            ch.word_count = chinese_chars
 
-            for i, ch in enumerate(chapters):
-                if ch.is_vip:
-                    continue
+                        results.append(ch)
 
-                url = ch.url or self.CHAPTER_URL_TEMPLATE.format(
-                    book_id=ch.book_id, chapter_id=ch.chapter_id
-                )
-                try:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-                    await page.wait_for_load_state("networkidle", timeout=30_000)
-                    await asyncio.sleep(2)
+                        # ── 阅读行为模拟 ──
+                        wc = ch.word_count or len(ch.content or "") // 2
+                        self.simulate_read_delay(wc)
+                        self.simulate_inter_chapter_delay()
 
-                    # 获取完整 HTML，通过 _extract_full 处理（含字体解码和内容清洗）
-                    html = await page.content()
-                    if html:
-                        text, _ = self._extract_full(html)
-                        ch.content = text or ""
-                    ch.fetched_at = datetime.now()
-                    if ch.content:
-                        chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", ch.content))
-                        ch.word_count = chinese_chars
+                    except Exception as e:
+                        logger.warning("批量获取章节 %s 失败: %s", ch.title, e)
+                        results.append(ch)
 
-                except Exception as e:
-                    logger.warning("批量获取章节 %s 失败: %s", ch.title, e)
+                    logger.info("批量进度: %d/%d (%.0f%%)",
+                                len(results), total, len(results) / total * 100)
 
-                logger.info("批量进度: %d/%d (%.0f%%)", i + 1, total, (i + 1) / total * 100)
+            finally:
+                await browser.close()
 
-        finally:
-            await browser.close()
-
-        return chapters
+        return results
 
     # ── 阅读行为模拟 ──────────────────────────────────────────────────
 
@@ -1140,7 +1169,7 @@ class QidianEngine(BaseEngine):
     # ══════════════════════════════════════════════════════════════════
 
     def _get_curl_session(self, cookies: dict[str, str] | None = None) -> CurlSession:
-        """获取或创建 curl_cffi Session。"""
+        """获取或创建 curl_cffi Session，附带请求头微随机化。"""
         if self._curl_session is None:
             if CurlSession is None:
                 raise ImportError("curl_cffi 未安装，请执行: pip install curl-cffi")
@@ -1150,6 +1179,22 @@ class QidianEngine(BaseEngine):
                     "http": self.proxy,
                     "https": self.proxy,
                 }
+
+            # 请求头微随机化：每次引擎初始化随机选一套头，避免固定指纹
+            import random
+            ua_variants = [
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            ]
+            accept_lang_variants = [
+                "zh-CN,zh;q=0.9,en;q=0.8",
+                "zh-CN,zh;q=0.9,zh-TW;q=0.8",
+                "zh-CN,zh;q=0.8,en;q=0.7",
+            ]
+            self._curl_session.headers.update({
+                "Accept-Language": random.choice(accept_lang_variants),
+                "User-Agent": random.choice(ua_variants),
+            })
 
         # Set cookies if provided
         if cookies:
@@ -1216,7 +1261,12 @@ class QidianEngine(BaseEngine):
                         continue
 
                 if status == 429:
-                    time.sleep(5.0)
+                    # 指数退避：第1次5秒，第2次30秒，第3次120秒
+                    backoff = [5, 30, 120, 600]
+                    wait = backoff[min(attempt - 1, len(backoff) - 1)]
+                    logger.warning("触发限流(429)，指数退避 %d 秒 (attempt %d/%d)",
+                                   wait, attempt, self.retry_times)
+                    time.sleep(wait)
                     if attempt < self.retry_times:
                         continue
 
