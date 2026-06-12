@@ -44,6 +44,7 @@ class Novel17kAdapter(SiteAdapter):
 
     URL_PATTERNS = [
         r"(?:www\.)?17k\.com/book/(\d+)",
+        r"(?:www\.)?17k\.com/chapter/(\d+)/(\d+)",
     ]
 
     def __init__(self):

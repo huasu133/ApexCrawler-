@@ -15,7 +15,8 @@ class QidianAdapter(SiteAdapter):
     URL_PATTERNS = [
         r"book\.qidian\.com/info/(\d+)",
         r"www\.qidian\.com/book/(\d+)",
-        r"qidian\.com/(?:book|info)/(\d+)",
+        r"www\.qidian\.com/chapter/(\d+)",
+        r"qidian\.com/(?:book|info|chapter)/(\d+)",
     ]
 
     def __init__(self):
