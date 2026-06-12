@@ -538,6 +538,17 @@ class QidianEngine(BaseEngine):
 
                     page_html = await page.content()
 
+                    # 提取书名
+                    try:
+                        book_title = await page.evaluate("""() => {
+                            const el = document.querySelector('.book-info h1, .book-name, [class*="book-name"], h1');
+                            return el ? el.textContent.trim() : '';
+                        }""")
+                        if book_title:
+                            self._last_book_title = book_title
+                    except Exception:
+                        pass
+
                     # 通过 evaluate 提取渲染后的章节列表
                     chapters_data = await page.evaluate("""(bookId) => {
                         const selector = '[class*="chapter"] a[href*="/chapter/' + bookId + '/"]';
