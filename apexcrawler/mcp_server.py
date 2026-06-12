@@ -18,7 +18,13 @@ import socket
 from typing import Optional
 from urllib.parse import urlparse
 
-from mcp.server.fastmcp import FastMCP
+# 延迟导入 mcp（可选依赖），避免未安装时模块级 ImportError
+try:
+    from mcp.server.fastmcp import FastMCP
+    _MCP_AVAILABLE = True
+except ImportError:
+    FastMCP = None  # type: ignore
+    _MCP_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -63,13 +69,27 @@ def _validate_url(url: str) -> None:
                 raise ValueError(f"Blocked IP: {host} (in {net})")
 
 # ══════════════════════════════════════════════════════════════════════
-# MCP Server
+# MCP Server（仅在 mcp 包已安装时启用）
 # ══════════════════════════════════════════════════════════════════════
 
-server = FastMCP(
-    name="ApexCrawler",
-    instructions="ApexCrawler MCP Server — provides web crawling, content extraction, search, and URL inspection capabilities",
-)
+if _MCP_AVAILABLE:
+    server = FastMCP(
+        name="ApexCrawler",
+        instructions="ApexCrawler MCP Server — provides web crawling, content extraction, search, and URL inspection capabilities",
+    )
+else:
+    # Stub server: 让 @server.tool() 装饰器不报错，但不注册任何工具
+    class _StubMCP:
+        def tool(self, *a, **kw):
+            def noop(f):
+                return f
+            return noop
+        def resource(self, *a, **kw):
+            def noop(f):
+                return f
+            return noop
+    server = _StubMCP()
+    logger.info("MCP server 不可用（需要安装 mcp 包: pip install apexcrawler[mcp]）")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -700,4 +720,8 @@ async def inspect_url_tool(url: str, headless: bool = True, timeout: int = 30) -
 # ══════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    server.run(transport="stdio")
+    if _MCP_AVAILABLE:
+        server.run(transport="stdio")
+    else:
+        print("MCP server 不可用。请安装: pip install apexcrawler[mcp]")
+        sys.exit(1)

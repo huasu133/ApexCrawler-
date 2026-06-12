@@ -624,18 +624,34 @@ class QidianEngine(BaseEngine):
 
         chapters: List[Chapter] = []
         curl_cookies = None
+        self._last_book_title = ""
+
+        # 先尝试加载已持久化的 Cookie（秒级，免去 WAF 绕过）
         if self._cookie_store.exists:
             stored = self._cookie_store.load()
             if stored:
                 curl_cookies = self._cookie_store.to_curl_format(stored)
                 logger.info("使用持久化 Cookie (%d 个)", len(stored))
 
+        # 没有有效 Cookie → 尝试 Playwright stealth 过 WAF（比 CloakBrowser 快 3-5 倍）
         if not curl_cookies:
-            logger.info("Cookie 存储为空或已过期，执行 WAF 绕过...")
+            logger.info("WAF 绕过：尝试 Playwright stealth...")
+            try:
+                cookies = _run_async(self.bypass_waf_async())
+                if cookies:
+                    self._cookie_store.save(cookies)
+                    curl_cookies = self._cookie_store.to_curl_format(cookies)
+                    logger.info("Playwright stealth 绕过成功 (%d 个 Cookie)", len(cookies))
+            except Exception as e:
+                logger.warning("Playwright stealth 失败: %s，尝试 CloakBrowser...", e)
+
+        # 如果 Playwright 没拿到 Cookie，回退到 CloakBrowser
+        if not curl_cookies:
+            logger.info("WAF 绕过：尝试 CloakBrowser...")
             try:
                 curl_cookies = self._bypass_waf_and_fetch_cookies(book_id=book_id)
             except Exception as e:
-                logger.warning("WAF 绕过失败: %s，将使用无 Cookie 请求", e)
+                logger.warning("CloakBrowser 绕过也失败: %s，将使用无 Cookie 请求", e)
 
         # 如果 WAF 绕过时已经拿到了章节数据，直接使用
         if hasattr(self, '_chapters_data') and self._chapters_data:
@@ -683,6 +699,8 @@ class QidianEngine(BaseEngine):
                 return []
 
         data = resp.get("json") or {}
+        # 提取书名
+        self._last_book_title = data.get("data", {}).get("bookName", "") or ""
         chapters = []  # 复用 line 627 的声明
 
         # 尝试从 API JSON 解析
