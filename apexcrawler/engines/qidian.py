@@ -536,7 +536,8 @@ class QidianEngine(BaseEngine):
 
                     # 通过 evaluate 提取渲染后的章节列表
                     chapters_data = await page.evaluate("""(bookId) => {
-                        const links = document.querySelectorAll('[class*="chapter"] a[href*="/chapter/" + bookId + "/"]');
+                        const selector = '[class*="chapter"] a[href*="/chapter/' + bookId + '/"]';
+                        const links = document.querySelectorAll(selector);
                         return Array.from(links).map(a => ({
                             title: a.textContent.trim(),
                             href: a.getAttribute('href') || '',
