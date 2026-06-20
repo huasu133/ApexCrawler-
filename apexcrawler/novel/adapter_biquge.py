@@ -150,12 +150,25 @@ class BiqugeAdapter(SiteAdapter):
                     soup.select_one('[class*="bookName"]'))
         book_name = title_el.get_text(strip=True) if title_el else f"Book {book_id}"
 
+        # Extract description / 内容简介
+        description = ""
+        desc_el = (soup.select_one(".intro") or soup.select_one("#intro") or
+                   soup.select_one(".book-intro") or soup.select_one("#bookintro") or
+                   soup.select_one('[class*="intro"]') or soup.select_one('[class*="desc"]') or
+                   soup.select_one('meta[name="description"]'))
+        if desc_el:
+            if desc_el.name == "meta":
+                description = desc_el.get("content", "").strip()
+            else:
+                description = desc_el.get_text(strip=True)
+
         # Extract chapter list
         chapters = self._extract_chapters(soup, book_id)
 
         return BookInfo(
             book_id=str(book_id),
             title=book_name,
+            description=description,
             chapters=chapters,
         )
 

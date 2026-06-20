@@ -115,10 +115,20 @@ class ZonghengAdapter(SiteAdapter):
             if m:
                 author = m.group(1).strip()
 
+        # Extract description / 内容简介
+        description = ""
+        m = re.search(r'<meta\s+name="description"\s+content="([^"]+)"', html)
+        if m:
+            description = m.group(1).strip()
+        if not description:
+            m = re.search(r'<div[^>]*class="[^"]*intro[^"]*"[^>]*>(.*?)</div>', html, re.DOTALL)
+            if m:
+                description = re.sub(r'<[^>]+>', '', m.group(1)).strip()
+
         # Get chapter list (cached or via Playwright)
         chapters = self._get_chapters(book_id)
 
-        return BookInfo(book_id=book_id, title=title, author=author, chapters=chapters)
+        return BookInfo(book_id=book_id, title=title, author=author, description=description, chapters=chapters)
 
     def _get_chapters(self, book_id: str) -> List[Chapter]:
         """Get chapter list — from cache or via Playwright with user Chrome profile."""

@@ -549,6 +549,19 @@ class QidianEngine(BaseEngine):
                     except Exception:
                         pass
 
+                    # 提取简介
+                    try:
+                        desc = await page.evaluate("""() => {
+                            const el = document.querySelector('.book-info .intro, .book-intro, .intro, [class*="intro"], [class*="summary"], meta[name="description"]');
+                            if (!el) return '';
+                            if (el.tagName === 'META') return el.getAttribute('content') || '';
+                            return el.textContent.trim();
+                        }""")
+                        if desc:
+                            self._last_book_description = desc
+                    except Exception:
+                        pass
+
                     # 通过 evaluate 提取渲染后的章节列表
                     chapters_data = await page.evaluate("""(bookId) => {
                         const selector = '[class*="chapter"] a[href*="/chapter/' + bookId + '/"]';
@@ -636,6 +649,7 @@ class QidianEngine(BaseEngine):
         chapters: List[Chapter] = []
         curl_cookies = None
         self._last_book_title = ""
+        self._last_book_description = ""
 
         # 先尝试加载已持久化的 Cookie（秒级，免去 WAF 绕过）
         if self._cookie_store.exists:
@@ -712,6 +726,9 @@ class QidianEngine(BaseEngine):
         data = resp.get("json") or {}
         # 提取书名
         self._last_book_title = data.get("data", {}).get("bookName", "") or ""
+        desc_api = data.get("data", {}).get("description", "") or data.get("data", {}).get("brief", "")
+        if desc_api:
+            self._last_book_description = desc_api
         chapters = []  # 复用 line 627 的声明
 
         # 尝试从 API JSON 解析

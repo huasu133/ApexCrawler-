@@ -125,9 +125,30 @@ class Novel17kAdapter(SiteAdapter):
             return self._cache[book_id]
 
         chapters = _run_async_safe(self._fetch_chapter_list(book_id))
+
+        # 获取书籍详情（标题+简介）
+        title = f"Book {book_id}"
+        description = ""
+        detail_js = """() => {
+            const el = document.querySelector('.book-info h1, .book-name, .info h1, .intro-title, .book-title');
+            const desc = document.querySelector('.intro, .book-intro, .desc, .book-desc, [class*="intro"], [class*="summary"]');
+            return JSON.stringify({
+                title: el ? el.textContent.trim() : '',
+                description: desc ? desc.textContent.trim() : ''
+            });
+        }"""
+        try:
+            detail_result = _run_async_safe(self._eval_on_page(f"https://www.17k.com/book/{book_id}.html", detail_js))
+            if detail_result and isinstance(detail_result, dict):
+                title = detail_result.get("title", "") or title
+                description = detail_result.get("description", "")
+        except Exception:
+            pass
+
         book = BookInfo(
             book_id=str(book_id),
-            title=f"Book {book_id}",
+            title=title,
+            description=description,
             chapters=chapters,
         )
         self._cache[book_id] = book

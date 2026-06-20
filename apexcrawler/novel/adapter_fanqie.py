@@ -71,8 +71,9 @@ class FanqieAdapter(SiteAdapter):
             book_data = data.get("data", {})
             title = book_data.get("book_name", "") or book_data.get("title", f"Book {book_id}")
             author = book_data.get("author", "") or book_data.get("author_name", "")
+            description = book_data.get("description", "") or book_data.get("brief", "")
             chapters = self._fetch_chapters_via_api(book_id)
-            return BookInfo(book_id=book_id, title=title, author=author, chapters=chapters)
+            return BookInfo(book_id=book_id, title=title, author=author, description=description, chapters=chapters)
         except Exception as e:
             logger.warning("API fetch failed for %s: %s, falling back to HTML", book_id, e)
             return self._get_book_info_via_html(book_id)
@@ -100,8 +101,19 @@ class FanqieAdapter(SiteAdapter):
                 author = m.group(1)
                 break
 
+        description = ""
+        for p in [r'"description"\s*:\s*"([^"]+)"', r'"brief"\s*:\s*"([^"]+)"']:
+            m = re.search(p, html)
+            if m:
+                description = m.group(1)
+                break
+        if not description:
+            m = re.search(r'<meta\s+name="description"\s+content="([^"]+)"', html)
+            if m:
+                description = m.group(1)
+
         chapters = self._fetch_chapters_via_html(book_id, html)
-        return BookInfo(book_id=book_id, title=title, author=author, chapters=chapters)
+        return BookInfo(book_id=book_id, title=title, author=author, description=description, chapters=chapters)
 
     def _fetch_chapters_via_api(self, book_id: str) -> List[Chapter]:
         chapters = []

@@ -55,11 +55,13 @@ class QidianAdapter(SiteAdapter):
             )
             for c in qidian_chapters
         ]
-        # 从引擎获取书名（API JSON 或页面提取）
+        # 从引擎获取书名和简介
         title = getattr(self.engine, "_last_book_title", "") or f"Book {book_id}"
+        description = getattr(self.engine, "_last_book_description", "")
         return BookInfo(
             book_id=str(book_id),
             title=title,
+            description=description,
             chapters=chapters,
         )
 

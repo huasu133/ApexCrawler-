@@ -184,6 +184,16 @@ class Zhuis1Adapter(SiteAdapter):
         if not title:
             title = f"Book {book_id}"
 
+        # 尝试获取简介
+        description = ""
+        try:
+            description = await self._engine._page.evaluate("""() => {
+                const el = document.querySelector('.book-intro, .intro, .desc, [class*="intro"], [class*="summary"], .book-desc, .novel-intro');
+                return el ? el.textContent.trim() : '';
+            }""")
+        except Exception:
+            pass
+
         chapters = []
         for i, ch in enumerate(data, 1):
             chapters.append(Chapter(
@@ -198,6 +208,7 @@ class Zhuis1Adapter(SiteAdapter):
         return BookInfo(
             book_id=book_id,
             title=title,
+            description=description,
             chapters=chapters,
         )
 
