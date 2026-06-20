@@ -6,6 +6,7 @@ from apexcrawler.novel import adapter_17k       # noqa: F401
 from apexcrawler.novel import adapter_biquge    # noqa: F401
 from apexcrawler.novel import adapter_fanqie    # noqa: F401
 from apexcrawler.novel import adapter_zongheng  # noqa: F401
+from apexcrawler.novel import adapter_zhuis1    # noqa: F401
 
 from apexcrawler.novel.engine import NovelEngine
 from apexcrawler.novel.adapter_base import SiteAdapter, Chapter, BookInfo

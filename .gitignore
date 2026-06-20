@@ -9,8 +9,12 @@ build/
 node_modules/
 .DS_Store
 
+# Python virtual environments
+venv_system/
+
 # Test output files
 Book *.txt
+*_*.txt
 我是*.txt
 *.html
 *.png

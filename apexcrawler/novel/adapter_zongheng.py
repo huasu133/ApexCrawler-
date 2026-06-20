@@ -43,13 +43,21 @@ class ZonghengAdapter(SiteAdapter):
         return self._session
 
     def _inject_chrome_cookies(self):
-        """从系统Chrome用户数据注入.zongheng.com的Cookie到curl_cffi会话。"""
-        import os, http.cookiejar
-        cookie_file = os.path.expanduser(
-            "~/Library/Application Support/Google/Chrome/Default/Cookies"
+        """从系统Chrome用户数据注入.zongheng.com的Cookie到curl_cffi会话。
+
+        默认读取默认Chrome配置的Cookie。可通过 ZONGHENG_CHROME_USER_DATA 环境变量
+        指定其他Chrome用户数据目录（如白号专用Profile）。
+        """
+        import os, sys
+        user_data_dir = os.environ.get(
+            "ZONGHENG_CHROME_USER_DATA",
+            os.path.expanduser("~/Library/Application Support/Google/Chrome/Default")
+            if sys.platform == "darwin"
+            else os.path.expanduser("~/.config/google-chrome/Default"),
         )
+        cookie_file = os.path.join(user_data_dir, "Cookies")
         if not os.path.exists(cookie_file):
-            logger.debug("Chrome cookie文件不存在, 跳过注入")
+            logger.debug("Chrome cookie文件不存在: %s, 跳过注入", cookie_file)
             return
         try:
             import sqlite3
