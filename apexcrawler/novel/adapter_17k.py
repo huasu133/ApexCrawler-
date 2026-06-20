@@ -217,14 +217,25 @@ class Novel17kAdapter(SiteAdapter):
         return str(text or "")
 
     def download(self, book: BookInfo, chapters: List[Chapter], output: str = "txt") -> str:
-        import os, time
+        import os, time, re
         filename = f"{book.title or book.book_id}_{int(time.time())}.{output}"
         content_lines = []
         total = len(chapters)
+        skipped = 0
 
         for i, ch in enumerate(chapters):
             text = self.fetch_chapter(ch)
-            content_lines.append(f"\n\n第{ch.index}章 {ch.title}\n\n{text}\n")
+            # 跳过未完整更新的章节（字数过少）
+            if len(text.strip()) < 200:
+                logger.info("跳过未完成章节 (%d字): %s", len(text.strip()), ch.title)
+                skipped += 1
+                continue
+            # 标题已含章节号时不重复加前缀
+            if re.match(r'^第(?:\d+|[一二三四五六七八九十百千零]+)[章节]', ch.title):
+                title_line = ch.title
+            else:
+                title_line = f"第{ch.index}章 {ch.title}"
+            content_lines.append(f"\n\n{title_line}\n\n{text}\n")
             logger.info("下载进度: %d/%d (%.0f%%)", i + 1, total, (i + 1) / total * 100)
             wc = len(text)
             self.simulate_read_delay(wc)
@@ -233,5 +244,5 @@ class Novel17kAdapter(SiteAdapter):
         path = os.path.join(os.getcwd(), filename)
         with open(path, "w", encoding="utf-8") as f:
             f.write("".join(content_lines))
-        logger.info("下载完成: %s (%d 章, %s)", path, total, output.upper())
+        logger.info("下载完成: %s (%d 章, 跳过%d章未完成)", path, total - skipped, skipped)
         return path

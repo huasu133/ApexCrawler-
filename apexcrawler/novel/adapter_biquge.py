@@ -67,10 +67,12 @@ class BiqugeAdapter(SiteAdapter):
         "biqugeinfo", "biqugezw", "biqugeabc", "biqugebu",
         "biquge5200", "biquge6", "biquge7", "biqugewu",
         "biqugewin", "biqugenet", "biqugeco", "biqugecn",
+        "smepc",
     ]
 
     URL_PATTERNS = [
         r"^https?://(?:www\.)?(?:{d})\.[a-z]+/book/(\d+)",
+        r"^https?://(?:www\.)?(?:{d})\.[a-z]+/xs/(\d+)/(\d+)",
     ]
 
     @classmethod
@@ -125,7 +127,8 @@ class BiqugeAdapter(SiteAdapter):
         for p in self._patterns:
             m = re.search(p, url)
             if m:
-                return int(m.group(1))
+                # /xs/55/55749/ → group(2)=55749
+                return int(m.group(2) if m.lastindex >= 2 and m.group(2) else m.group(1))
         raise ValueError(f"Cannot extract book_id from: {url}")
 
     def _soup(self, url: str) -> "BeautifulSoup":
@@ -194,6 +197,17 @@ class BiqugeAdapter(SiteAdapter):
                 continue
 
             title = a.get_text(strip=True) or f"Chapter {i}"
+            # 跳过非小说章节（上架感言、更新通知、求票等）
+            if not re.match(
+                r'^(?:第\d+[章节]|序章?|楔子|第?[一二三四五六七八九十百千]+[章节]|'
+                r'\d+[\.、]|Chapter\s*\d+|番外)',
+                title,
+            ):
+                # 放宽：包含数字也放行（如 "第1章 师恩" 已经匹配）
+                # 但明显的非章节标题跳过
+                if not any(kw in title for kw in ['章', '节', '话', '卷', '回']):
+                    logger.debug("跳过非章节: %s", title)
+                    continue
             # Extract chapter_id from href
             ch_id_match = re.search(r'/(\d+)\.html', href)
             ch_id = ch_id_match.group(1) if ch_id_match else str(i)
@@ -232,19 +246,42 @@ class BiqugeAdapter(SiteAdapter):
     def _extract_content(self, soup: "BeautifulSoup") -> str:
         """Extract chapter content from BeautifulSoup object."""
         for selector in [
+            "#htmlContent", "#chaptercontent", "#read .content",
             "#content", ".content", ".read-content", ".chapter-content",
             ".text", ".article-content", ".showtxt", ".chapter_content",
-            ".book-content", ".yd_text2", "#chaptercontent",
+            ".book-content", ".yd_text2",
             '[class*="content"]', '[class*="text"]',
         ]:
             el = soup.select_one(selector)
             if el:
+                # 按 <p> 标签分段落，保留原文段落结构
+                paragraphs = el.find_all("p")
+                if paragraphs:
+                    lines = []
+                    for p in paragraphs:
+                        text = p.get_text(strip=True)
+                        if not text:
+                            continue
+                        # 跳过导航噪声行
+                        if re.match(
+                            r'^(?:本章完|请记住本书首发域名|一秒记住|天才一秒记住|'
+                            r'手机用户请浏览|提示：|推荐：|https?://|投推荐票|书首章|'
+                            r'←|章节列表|→|下一章|上一章|书末章|加入书签|'
+                            r'将本站设为首页|收藏笔趣阁|手机版|热门推荐：|新书推荐：|'
+                            r'温馨提示|首页|我的书架|玄幻魔法|武侠修真|都市言情|'
+                            r'历史军事|网游动漫|科幻灵异|其他小说|排行榜单|全本小说|阅读记录)',
+                            text,
+                        ):
+                            continue
+                        lines.append(text)
+
+                    if lines:
+                        return "\n\n".join(lines)
+
+                # Fallback: flat text with separator
                 raw = el.get_text("\n", strip=True)
                 if len(raw) > 100:
-                    import re as _re
-                    text = _re.sub(r'(?:^|\n)\s*(?:本章完|请记住本书首发域名|一秒记住|天才一秒记住|\
-                                手机用户请浏览|提示：|推荐：|https?://\S+)\s*(?:\n|$)', '', raw)
-                    return text.strip()
+                    return raw.strip()
 
         # Fallback: extract all substantial paragraphs
         paragraphs = soup.select("p")
@@ -283,7 +320,17 @@ class BiqugeAdapter(SiteAdapter):
 
         for i, ch in enumerate(chapters):
             text = self.fetch_chapter(ch)
-            content_lines.append(f"\n\n第{ch.index}章 {ch.title}\n\n{text}\n")
+            # 跳过未完整更新的章节（字数过少，可能是占位预览）
+            MIN_CHAPTER_LEN = 200  # 少于200字视为未完成
+            if len(text.strip()) < MIN_CHAPTER_LEN:
+                logger.info("跳过未完成章节 (%d字): %s", len(text.strip()), ch.title)
+                continue
+            # 如果标题已包含章节号（如 "第103章" 或 "第一章"），不重复加前缀
+            if re.match(r'^第(?:\d+|[一二三四五六七八九十百千零]+)[章节]', ch.title):
+                title_line = ch.title
+            else:
+                title_line = f"第{ch.index}章 {ch.title}"
+            content_lines.append(f"\n\n{title_line}\n\n{text}\n")
             logger.info("下载进度: %d/%d (%.0f%%)", i + 1, total, (i + 1) / total * 100)
             wc = len(text)
             self.simulate_read_delay(wc)

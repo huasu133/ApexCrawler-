@@ -312,8 +312,14 @@ class Zhuis1Adapter(SiteAdapter):
                             content = f"(下载失败: {e})"
 
                 # 写入文件
-                f.write(f"\n{ch.title}\n\n{content}\n\n" + "-" * 60 + "\n\n")
-                f.flush()
+                if content and len(content.strip()) >= 200:
+                    f.write(f"\n{ch.title}\n\n{content}\n\n" + "-" * 60 + "\n\n")
+                    f.flush()
+                else:
+                    logger.info("  ⏭️ 跳过未完成章节 (%d字): %s", len(content.strip()), ch.title)
+                    downloaded_set.add(i)  # 标记为已处理，避免下次重试
+                    _save_progress(progress_file, downloaded_set)
+                    continue
 
                 # 记录进度
                 downloaded_set.add(i)

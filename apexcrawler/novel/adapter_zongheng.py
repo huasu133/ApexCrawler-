@@ -282,17 +282,22 @@ class ZonghengAdapter(SiteAdapter):
         ]:
             m = re.search(pattern, html, re.DOTALL)
             if m:
-                text = re.sub(r'<[^>]+>', '', m.group(1))
-                text = re.sub(r'\s*\n\s*', '\n', text).strip()
+                # Preserve paragraph structure: replace <p> with double newlines
+                content_html = m.group(1)
+                text = re.sub(r'</?p[^>]*>', '\n', content_html)
+                text = re.sub(r'<br\s*/?>', '\n', text)
+                text = re.sub(r'<[^>]+>', '', text)
+                text = re.sub(r'\n{3,}', '\n\n', text)
+                text = text.strip()
                 if len(text) > 100:
                     text = self._clean_content(text)
                     return text
 
-        # Fallback: extract paragraphs
+        # Fallback: extract paragraphs with spacing
         paragraphs = re.findall(r'<p[^>]*>(.*?)</p>', html, re.DOTALL)
         texts = [re.sub(r'<[^>]+>', '', p).strip() for p in paragraphs if len(re.sub(r'<[^>]+>', '', p).strip()) > 10]
         if texts:
-            return "\n".join(texts)
+            return "\n\n".join(texts)
 
         return ""
 
@@ -307,14 +312,23 @@ class ZonghengAdapter(SiteAdapter):
         return text.strip()
 
     def download(self, book: BookInfo, chapters: List[Chapter], output: str = "txt") -> str:
-        import os
+        import os, re
         filename = f"{book.title or book.book_id}_{int(time.time())}.{output}"
         content_lines = []
         total = len(chapters)
+        skipped = 0
 
         for i, ch in enumerate(chapters):
             text = self.fetch_chapter(ch)
-            content_lines.append(f"\n\n第{ch.index}章 {ch.title}\n\n{text}\n")
+            if len(text.strip()) < 200:
+                logger.info("跳过未完成章节 (%d字): %s", len(text.strip()), ch.title)
+                skipped += 1
+                continue
+            if re.match(r'^第(?:\d+|[一二三四五六七八九十百千零]+)[章节]', ch.title):
+                title_line = ch.title
+            else:
+                title_line = f"第{ch.index}章 {ch.title}"
+            content_lines.append(f"\n\n{title_line}\n\n{text}\n")
             logger.info("下载进度: %d/%d (%.0f%%)", i + 1, total, (i + 1) / total * 100)
             wc = len(text)
             self.simulate_read_delay(wc)
@@ -323,5 +337,5 @@ class ZonghengAdapter(SiteAdapter):
         path = os.path.join(os.getcwd(), filename)
         with open(path, "w", encoding="utf-8") as f:
             f.write("".join(content_lines))
-        logger.info("下载完成: %s (%d 章, %s)", path, total, output.upper())
+        logger.info("下载完成: %s (%d 章, 跳过%d章未完成, %s)", path, total - skipped, skipped, output.upper())
         return path

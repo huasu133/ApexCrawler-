@@ -243,9 +243,13 @@ class FanqieAdapter(SiteAdapter):
                     except Exception:
                         pass
 
-            # Step 4: Strip HTML tags and normalize whitespace
-            text = re.sub(r'<[^>]+>', '', raw)
-            text = re.sub(r'\s*\n\s*', '\n', text).strip()
+            # Step 4: Preserve paragraph structure, strip other HTML tags
+            # Replace <p> and <br> with newlines to maintain paragraph breaks
+            text = re.sub(r'</?p[^>]*>', '\n', raw)
+            text = re.sub(r'<br\s*/?>', '\n', text)
+            text = re.sub(r'<[^>]+>', '', text)
+            text = re.sub(r'\n{3,}', '\n\n', text)
+            text = text.strip()
 
             if len(text) < 50:
                 return ""
@@ -257,13 +261,22 @@ class FanqieAdapter(SiteAdapter):
             return ""
 
     def download(self, book: BookInfo, chapters: List[Chapter], output: str = "txt") -> str:
-        import os
+        import os, re
         filename = f"{book.title or book.book_id}_{int(time.time())}.{output}"
         content_lines = []
         total = len(chapters)
+        skipped = 0
         for i, ch in enumerate(chapters):
             text = self.fetch_chapter(ch)
-            content_lines.append(f"\n\n第{ch.index}章 {ch.title}\n\n{text}\n")
+            if len(text.strip()) < 200:
+                logger.info("跳过未完成章节 (%d字): %s", len(text.strip()), ch.title)
+                skipped += 1
+                continue
+            if re.match(r'^第(?:\d+|[一二三四五六七八九十百千零]+)[章节]', ch.title):
+                title_line = ch.title
+            else:
+                title_line = f"第{ch.index}章 {ch.title}"
+            content_lines.append(f"\n\n{title_line}\n\n{text}\n")
             logger.info("下载进度: %d/%d (%.0f%%)", i + 1, total, (i + 1) / total * 100)
             wc = len(text)
             self.simulate_read_delay(wc)
@@ -271,5 +284,5 @@ class FanqieAdapter(SiteAdapter):
         path = os.path.join(os.getcwd(), filename)
         with open(path, "w", encoding="utf-8") as f:
             f.write("".join(content_lines))
-        logger.info("\u4e0b\u8f7d\u5b8c\u6210: %s (%d \u7ae0, %s)", path, total, output.upper())
+        logger.info("下载完成: %s (%d 章, 跳过%d章未完成, %s)", path, total - skipped, skipped, output.upper())
         return path
