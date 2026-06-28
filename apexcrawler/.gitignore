@@ -1,0 +1,11 @@
+*.pyc
+__pycache__/
+.workbuddy/
+*.txt
+!requirements.txt
+cookies.json
+.env
+*.egg-info/
+dist/
+build/
+.DS_Store

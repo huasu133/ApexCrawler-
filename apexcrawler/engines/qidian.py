@@ -414,13 +414,16 @@ class QidianEngine(BaseEngine):
         return _run_async(self.bypass_waf_async(url))
 
     async def bypass_waf_async(
-        self, url: Optional[str] = None
+        self, url: Optional[str] = None, book_id: Optional[int] = None
     ) -> List[Dict[str, str]]:
         """
-        异步方式：启动有头浏览器过 WAF，返回已验证的 Cookie 列表。
+        异步方式：Playwright headless 三轮导航过 WAF，返回已验证的 Cookie 列表。
+
+        流程：首页触发 Cloudflare → 书籍页（取 csrf、书名、作者）→ 阅读页（过 read.qidian.com）
 
         Args:
             url: 目标 URL（默认起点首页）
+            book_id: 书籍 ID（提供后会自动完成三轮导航）
 
         Returns:
             Playwright cookie 列表，每项含 name, value, domain, path 等字段
@@ -435,7 +438,7 @@ class QidianEngine(BaseEngine):
         self._playwright = await async_playwright().start()
 
         launch_opts: Dict[str, Any] = {
-            "headless": self.headless,
+            "headless": True,  # 无头模式可正常工作！
             "args": [
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
@@ -461,19 +464,106 @@ class QidianEngine(BaseEngine):
         page = await self._playwright_context.new_page()
 
         try:
-            # 注入反检测 JS
-            await self._inject_stealth_js(page)
+            # ── 第 1 轮：首页触发 Cloudflare ──
+            logger.info("第 1/3 轮：访问首页触发 Cloudflare 挑战...")
+            try:
+                await page.goto(self.QIDIAN_URL, wait_until="domcontentloaded", timeout=30_000)
+            except Exception:
+                pass
+            await asyncio.sleep(3)
 
-            # 导航
-            logger.info("导航到: %s", target)
-            await page.goto(target, wait_until="domcontentloaded", timeout=30_000)
+            # ── 第 2 轮：书籍页（获取完整 Cookie + 书籍信息） ──
+            if book_id:
+                book_url = f"https://book.qidian.com/info/{book_id}/"
+                logger.info("第 2/3 轮：访问书籍页 (book_id=%d)...", book_id)
+                try:
+                    await page.goto(book_url, wait_until="domcontentloaded", timeout=30_000)
+                except Exception:
+                    pass
+                await asyncio.sleep(5)
 
-            # 等待 WAF 通过
-            await self._wait_for_waf_pass(page)
+                # 提取书籍信息
+                html = await page.content()
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(html, "html.parser")
+                h1 = soup.find("h1")
+                if h1:
+                    self._last_book_title = h1.get_text(strip=True)
+                # 提取作者、分类、状态
+                self._last_book_author = ""
+                self._last_book_category = ""
+                self._last_book_status = ""
+                for a in soup.find_all("a", href=True):
+                    href = a.get("href", "")
+                    txt = a.get_text(strip=True)
+                    if re.search(r"/(author|writer)/", str(href), re.I) and txt:
+                        level_tags = {"大神", "Lv.", "lv.", "作家", "签约", "白金"}
+                        if not any(txt.startswith(t) or txt == t for t in level_tags):
+                            self._last_book_author = txt
+                            break
+                info_texts = soup.get_text()
+                for kw in ("连载中", "已完结", "连载", "完结"):
+                    if kw in info_texts:
+                        self._last_book_status = "连载中" if "连载" in kw else "已完结"
+                        break
+                for d in soup.find_all("div", class_=lambda c: c and "info" in c.lower()):
+                    txt = d.get_text()
+                    for cat in ("轻小说","玄幻","仙侠","都市","科幻","游戏","历史","军事","奇幻","武侠","现实"):
+                        if cat in txt:
+                            self._last_book_category = cat
+                            break
+                    if self._last_book_category:
+                        break
 
-            # 获取 Cookie
+            # 获取 Cookie + csrf
             cookies = await self._playwright_context.cookies()
-            logger.info("获取到 %d 个 Cookie", len(cookies))
+            csrf = next((c["value"] for c in cookies if "csrf" in c["name"].lower()), "")
+            logger.info("获取到 %d 个 Cookie, csrf=%s...", len(cookies), csrf[:8] if csrf else "空")
+
+            # ── 第 3 轮：阅读页（让 read.qidian.com 也过 WAF） ──
+            free_ch_id = None
+            if book_id and csrf and cookies:
+                try:
+                    from curl_cffi.requests import Session as CurlSession
+                    tmp = CurlSession()
+                    for c in cookies:
+                        tmp.cookies.set(c["name"], c["value"], domain=c.get("domain", ".qidian.com"))
+
+                    r = tmp.get(
+                        "https://book.qidian.com/ajax/book/category",
+                        params={"_csrfToken": csrf, "bookId": book_id},
+                        headers={
+                            "Referer": f"https://book.qidian.com/info/{book_id}/",
+                            "X-Requested-With": "XMLHttpRequest",
+                        },
+                        impersonate="chrome131",
+                    )
+                    if r.status_code == 200:
+                        data = r.json()
+                        for v in data.get("data", {}).get("vs", []):
+                            for ch in v.get("cs", []):
+                                if ch.get("sS", 0) == 1:  # 免费章
+                                    free_ch_id = ch["id"]
+                                    break
+                            if free_ch_id:
+                                break
+                except Exception:
+                    pass
+
+            if free_ch_id:
+                # 同时访问 read.qidian.com 和 vipreader.qidian.com 让两个域都过 WAF
+                for ch_domain in ["read.qidian.com", "vipreader.qidian.com"]:
+                    ch_url = f"https://{ch_domain}/chapter/{book_id}/{free_ch_id}/"
+                    logger.info("第 3/3 轮：访问阅读页 (%s)...", ch_domain)
+                    try:
+                        await page.goto(ch_url, wait_until="domcontentloaded", timeout=30_000)
+                    except Exception:
+                        pass
+                    await asyncio.sleep(3)
+
+            # 最终获取所有 Cookie（合并 book + read 域名）
+            cookies = await self._playwright_context.cookies()
+            logger.info("WAF 绕过完成，最终 Cookie: %d 个", len(cookies))
             return cookies
         finally:
             await page.close()
@@ -488,9 +578,15 @@ class QidianEngine(BaseEngine):
         Returns:
             dict[str, str]: Cookie name→value 字典
         """
-        cookies_list, page_html, chapters_data = _run_async(
-            self._bypass_waf_and_fetch_cookies_async(book_id=book_id)
-        )
+        try:
+            cookies_list, page_html, chapters_data = _run_async(
+                self._bypass_waf_and_fetch_cookies_async(book_id=book_id)
+            )
+        except ImportError as e:
+            if 'cloakbrowser' in str(e):
+                logger.error("CloakBrowser 未安装，无法绕过 WAF")
+                raise RuntimeError("CloakBrowser 未安装。Playwright headless 绕过已替代此路径。")
+            raise
         self._page_html = page_html
         self._chapters_data = chapters_data  # 供 fetch_catalog 使用
         curl_cookies = self._cookie_store.to_curl_format(cookies_list)
@@ -650,31 +746,38 @@ class QidianEngine(BaseEngine):
         curl_cookies = None
         self._last_book_title = ""
         self._last_book_description = ""
+        self._last_book_author = ""
+        self._last_book_category = ""
+        self._last_book_status = ""
 
         # 先尝试加载已持久化的 Cookie（秒级，免去 WAF 绕过）
+        raw_cookies = None
         if self._cookie_store.exists:
             stored = self._cookie_store.load()
             if stored:
-                curl_cookies = self._cookie_store.to_curl_format(stored)
+                raw_cookies = stored
                 logger.info("使用持久化 Cookie (%d 个)", len(stored))
 
         # 没有有效 Cookie → 尝试 Playwright stealth 过 WAF（比 CloakBrowser 快 3-5 倍）
-        if not curl_cookies:
+        if not raw_cookies:
             logger.info("WAF 绕过：尝试 Playwright stealth...")
             try:
-                cookies = _run_async(self.bypass_waf_async())
+                cookies = _run_async(self.bypass_waf_async(book_id=book_id))
                 if cookies:
                     self._cookie_store.save(cookies)
-                    curl_cookies = self._cookie_store.to_curl_format(cookies)
+                    raw_cookies = cookies
                     logger.info("Playwright stealth 绕过成功 (%d 个 Cookie)", len(cookies))
             except Exception as e:
                 logger.warning("Playwright stealth 失败: %s，尝试 CloakBrowser...", e)
 
         # 如果 Playwright 没拿到 Cookie，回退到 CloakBrowser
-        if not curl_cookies:
+        if not raw_cookies:
             logger.info("WAF 绕过：尝试 CloakBrowser...")
             try:
-                curl_cookies = self._bypass_waf_and_fetch_cookies(book_id=book_id)
+                curl_dict = self._bypass_waf_and_fetch_cookies(book_id=book_id)
+                # CloakBrowser 返回的是 dict，转成 list 格式
+                if self._cookie_store.exists:
+                    raw_cookies = self._cookie_store.load()
             except Exception as e:
                 logger.warning("CloakBrowser 绕过也失败: %s，将使用无 Cookie 请求", e)
 
@@ -689,10 +792,17 @@ class QidianEngine(BaseEngine):
                 logger.info("章节提取完成: book_id=%d, 共 %d 章", book_id, len(chapters))
                 return chapters
 
-        session = self._get_curl_session(cookies=curl_cookies)
+        session = self._get_curl_session(cookies=raw_cookies)
 
         logger.info("正在获取章节列表 (book_id=%d)", book_id)
-        params = {"_csrfToken": "", "bookId": str(book_id)}
+        # 从 Cookie 中提取 csrfToken
+        csrf_token = ""
+        if raw_cookies:
+            for c in raw_cookies:
+                if "csrf" in c.get("name", "").lower():
+                    csrf_token = c.get("value", "")
+                    break
+        params = {"_csrfToken": csrf_token, "bookId": str(book_id)}
         # 添加浏览器必需的请求头，否则腾讯云WAF返回202
         api_headers = {
             "Referer": f"https://book.qidian.com/info/{book_id}",
@@ -729,6 +839,61 @@ class QidianEngine(BaseEngine):
         desc_api = data.get("data", {}).get("description", "") or data.get("data", {}).get("brief", "")
         if desc_api:
             self._last_book_description = desc_api
+        # 如果 API 没返回书名/元数据，从书籍页 HTML 提取
+        if not self._last_book_title or not self._last_book_author:
+            try:
+                book_url = f"https://book.qidian.com/info/{book_id}"
+                r2 = self._curl_get(session, book_url, headers={"Referer": "https://www.qidian.com"})
+                if r2["status_code"] == 200:
+                    html2 = r2.get("text", "")
+                    from bs4 import BeautifulSoup
+                    soup2 = BeautifulSoup(html2, "html.parser")
+                    if not self._last_book_title:
+                        h1 = soup2.find("h1")
+                        if h1:
+                            self._last_book_title = h1.get_text(strip=True)
+                    if not self._last_book_author:
+                        for a in soup2.find_all("a", href=True):
+                            href = a.get("href", "")
+                            txt = a.get_text(strip=True)
+                            if re.search(r"/(author|writer)/", href, re.I) and txt:
+                                if txt not in ("大神", "白金", "签约", "作家") and not txt.startswith("Lv."):
+                                    self._last_book_author = txt
+                                    break
+                    if not self._last_book_category or not self._last_book_status:
+                        for d in soup2.find_all("div", class_=lambda c: c and "book-info" in c.lower()):
+                            txt = d.get_text()
+                            # 状态
+                            if "已完结" in txt:
+                                self._last_book_status = "已完结"
+                            elif "连载" in txt:
+                                self._last_book_status = "连载中"
+                            # 分类: 从分隔符中找
+                            parts = txt.replace("\u00b7", "·").split("·")
+                            for p in parts:
+                                p = p.strip()
+                                if p in ("轻小说","玄幻","仙侠","都市","科幻","游戏","历史","军事","奇幻","武侠","现实"):
+                                    self._last_book_category = p
+                                    break
+                            if self._last_book_category:
+                                break
+                    if not self._last_book_description:
+                        for d in soup2.find_all("div", class_=lambda c: c and "intro" in c.lower()):
+                            txt = d.get_text(" ", strip=True)
+                            if len(txt) > 30:
+                                clean = re.sub(r'^(作品\s*)?简介\s*', '', txt)
+                                # 逐句过滤推广文字
+                                junk = ["版权", "仅供参考", "业务实际", "QQ群", "各位书友",
+                                        "本站提示", "不要忘记", "加更", "推荐票", "免费试读"]
+                                sentences = re.split(r'(?<=[。！？!?])', clean)
+                                clean_sentences = [s for s in sentences
+                                                   if s.strip() and not any(k in s for k in junk)
+                                                   and not re.search(r'求月票|月票.*?加更', s)]
+                                clean = "".join(clean_sentences).strip()
+                                if clean:
+                                    self._last_book_description = clean[:500]
+            except Exception:
+                pass
         chapters = []  # 复用 line 627 的声明
 
         # 尝试从 API JSON 解析
@@ -855,7 +1020,11 @@ class QidianEngine(BaseEngine):
         通过解析书籍页面 HTML 获取章节列表（API 失败时的降级方案）。
         """
         url = f"https://book.qidian.com/info/{book_id}"
-        session = self._get_curl_session()
+        # 使用缓存的 Cookie（如果有）
+        cookies = None
+        if self._cookie_store.exists:
+            cookies = self._cookie_store.load()
+        session = self._get_curl_session(cookies=cookies)
         html_headers = {
             "Referer": "https://www.qidian.com",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -952,7 +1121,14 @@ class QidianEngine(BaseEngine):
         Returns:
             填充了正文的 Chapter 对象
         """
-        session = self._get_curl_session()
+        # 加载缓存的 Cookie（原始格式，含 domain 信息）
+        raw_cookies = None
+        if self._cookie_store.exists:
+            stored = self._cookie_store.load()
+            if stored:
+                raw_cookies = stored  # pass raw list with domain
+
+        session = self._get_curl_session(cookies=raw_cookies)
         url = chapter_info.url or self.CHAPTER_URL_TEMPLATE.format(
             book_id=chapter_info.book_id, chapter_id=chapter_info.chapter_id
         )
@@ -1027,7 +1203,7 @@ class QidianEngine(BaseEngine):
         self, chapters: List[Chapter], max_workers: int = 1
     ) -> List[Chapter]:
         """
-        批量获取章节正文 — 优先使用单个 CloakBrowser 会话批量渲染（更快）。
+        批量获取章节正文 — 使用 curl_cffi + 缓存的 Cookie 逐章下载。
 
         Args:
             chapters: Chapter 列表
@@ -1036,11 +1212,6 @@ class QidianEngine(BaseEngine):
         Returns:
             填充了正文的 Chapter 列表
         """
-        # 批量走浏览器渲染（更快，统一WAF绕过）
-        if len(chapters) > 1:
-            return _run_async(self._batch_fetch_via_browser(chapters))
-
-        # 单章走常规路径（curl_cffi直接请求）
         results = []
         for ch in chapters:
             if not ch.is_vip:
@@ -1256,7 +1427,7 @@ class QidianEngine(BaseEngine):
     # 内部方法 — curl_cffi 隐身客户端
     # ══════════════════════════════════════════════════════════════════
 
-    def _get_curl_session(self, cookies: dict[str, str] | None = None) -> CurlSession:
+    def _get_curl_session(self, cookies: list[dict] | dict[str, str] | None = None) -> CurlSession:
         """获取或创建 curl_cffi Session，附带请求头微随机化。"""
         if self._curl_session is None:
             if CurlSession is None:
@@ -1283,10 +1454,20 @@ class QidianEngine(BaseEngine):
                 "User-Agent": random.choice(ua_variants),
             })
 
-        # Set cookies if provided
+        # Set cookies with domain
         if cookies:
-            for name, value in cookies.items():
-                self._curl_session.cookies.set(name, value)
+            if isinstance(cookies, dict):
+                # {name: value} format from to_curl_format
+                for name, value in cookies.items():
+                    self._curl_session.cookies.set(name, value)
+            else:
+                # list[dict] with full cookie metadata
+                for c in cookies:
+                    self._curl_session.cookies.set(
+                        c.get("name", ""),
+                        c.get("value", ""),
+                        domain=c.get("domain", ".qidian.com"),
+                    )
 
         return self._curl_session
 
@@ -1660,10 +1841,42 @@ class QidianEngine(BaseEngine):
         return False
 
     def _clean_text(self, text: str) -> str:
-        """清洗文本。"""
+        """清洗文本：去广告、去特殊字符、统一引号。"""
         if not text:
             return ""
+
+        # 去括号内求票广告
+        while '（' in text and '）' in text:
+            start = text.find('（')
+            end = text.find('）', start)
+            if end == -1:
+                break
+            inner = text[start:end+1]
+            if any(kw in inner for kw in ['求票','求追读','求订阅','求收藏','求月票','求推荐']):
+                text = text[:start] + text[end+1:]
+            else:
+                break
+
         text = self._decode_html_entities(text)
+        text = text.replace('（未完待续）', '').replace('（本章完）', '')
+        text = text.replace('未完待续', '').replace('本章完', '')
+
+        # 过滤整行广告/推广
+        ad_lines = [
+            r'QQ群.*?推荐', r'各位书友', r'本站提示',
+            r'不要忘记.*?(?:推荐|月票|推荐票|票|加更|收藏|订阅|追读)',
+            r'^加更', r'^求月票', r'^求推荐票',
+            r'月票.*?加更', r'推荐票.*?加更',
+            r'PS[：:].*?月票', r'PS[：:].*?追读', r'^求追读',
+            r'^上架感言',
+        ]
+        for p in ad_lines:
+            if re.search(p, text, re.I):
+                return ""
+        text = text.replace('\u200b', '').replace('\ufeff', '')  # 零宽空格/BOM
+        text = re.sub(r'[\ue000-\uf8ff]', '', text)  # 私有区字符
+        text = text.replace('\u201c', '\u300c').replace('\u201d', '\u300d')  # 统一引号
+
         lines = text.split("\n")
         cleaned = []
         for line in lines:
@@ -1673,7 +1886,8 @@ class QidianEngine(BaseEngine):
             if self._is_ad_line(line):
                 continue
             cleaned.append(line)
-        text = "\n".join(cleaned)
+
+        text = "\n\n".join(cleaned)
         text = re.sub(r"\n{3,}", "\n\n", text)
         text = re.sub(r"[ \t]+", " ", text)
         text = re.sub(r"^\s+", "", text, flags=re.MULTILINE)

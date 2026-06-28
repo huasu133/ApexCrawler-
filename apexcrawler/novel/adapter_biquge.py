@@ -272,7 +272,9 @@ class BiqugeAdapter(SiteAdapter):
                 if paragraphs:
                     lines = []
                     for p in paragraphs:
-                        text = p.get_text(strip=True)
+                        # 只取直接文本，不递归子<p>（防止嵌套p合并内容）
+                        direct = ''.join(p.find_all(string=True, recursive=False)).strip()
+                        text = direct if len(direct) > 5 else ''
                         if not text:
                             continue
                         # 跳过导航噪声行
