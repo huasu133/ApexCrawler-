@@ -1063,11 +1063,29 @@ class QidianEngine(BaseEngine):
                 args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
             )
             try:
-                page = await browser.new_page(
+                context = await browser.new_context(
                     viewport={"width": 1920, "height": 1080},
                     user_agent=self.DEFAULT_HEADERS["User-Agent"],
                     locale="zh-CN",
                 )
+                # 注入已保存的 Cookie（含 VIP/WAF 认证信息）
+                stored = self._cookie_store.load()
+                if stored:
+                    added = 0
+                    for c in stored:
+                        try:
+                            await context.add_cookies([{
+                                "name": c["name"],
+                                "value": c["value"],
+                                "domain": ".qidian.com",
+                                "path": "/",
+                            }])
+                            added += 1
+                        except Exception:
+                            pass
+                    logger.debug("Playwright: 已注入 %d 个 Cookie", added)
+
+                page = await context.new_page()
                 await self._inject_stealth_js(page)
                 await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
                 await page.wait_for_timeout(3000)
@@ -1214,9 +1232,10 @@ class QidianEngine(BaseEngine):
         """
         results = []
         for ch in chapters:
-            if not ch.is_vip:
+            try:
                 results.append(self.fetch_chapter(ch))
-            else:
+            except Exception as e:
+                logger.warning("章节 %s 下载失败: %s", ch.title, e)
                 results.append(ch)
         return results
 
