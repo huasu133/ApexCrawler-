@@ -1133,11 +1133,7 @@ class QidianEngine(BaseEngine):
         """
         获取单个章节的正文内容。
 
-        Args:
-            chapter_info: 章节信息对象
-
-        Returns:
-            填充了正文的 Chapter 对象
+        VIP 章节检查购买状态：已购买的解密下载，未购买的跳过。
         """
         # 加载缓存的 Cookie（原始格式，含 domain 信息）
         raw_cookies = None
@@ -1152,6 +1148,68 @@ class QidianEngine(BaseEngine):
         )
 
         logger.info("正在获取章节: %s - %s", chapter_info.title, url)
+
+        # ── VIP 章节：通过 SSR 数据检查购买状态 ──
+        if chapter_info.is_vip:
+            try:
+                # 使用 www.qidian.com/chapter/ 获取 SSR 数据
+                web_url = f"https://www.qidian.com/chapter/{chapter_info.book_id}/{chapter_info.chapter_id}/"
+                # 刷新 w_tsfp token
+                w_tsfp = self._refresh_w_tsfp_token(web_url)
+                if w_tsfp:
+                    session.cookies.set("w_tsfp", w_tsfp, domain=".qidian.com")
+
+                resp = self._curl_get(session, web_url, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0 Safari/537.36",
+                    "Referer": "https://www.qidian.com/",
+                })
+
+                if resp["status_code"] == 200:
+                    html = resp.get("text", "")
+                    import re, json
+                    ssr = re.search(
+                        r'<script id="vite-plugin-ssr_pageContext"[^>]*>(.*?)</script>',
+                        html, re.DOTALL
+                    )
+                    if ssr:
+                        data = json.loads(ssr.group(1).strip())
+                        ci = data.get("pageContext", {}).get("pageProps", {}).get("pageData", {}).get("chapterInfo", {})
+                        is_buy = ci.get("isBuy", 0)
+                        vip_status = ci.get("vipStatus", 0)
+
+                        if vip_status == 1 and is_buy == 0:
+                            logger.info("VIP 章节未购买，跳过: %s (chapter_id=%d)",
+                                        chapter_info.title, chapter_info.chapter_id)
+                            return chapter_info
+
+                        # 已购买或免费 — 尝试从 SSR 或 fallback 提取内容
+                        logger.info("VIP 章节已购买，尝试提取内容...")
+            except Exception as e:
+                logger.warning("VIP 章节 SSR 检测失败: %s", e)
+
+            # Fallback: 浏览器降级（带 Cookie 注入）
+            try:
+                pw_html = _run_async(self._fetch_chapter_via_playwright(url))
+                if pw_html:
+                    text, metadata = self._extract_full(pw_html)
+                    if text and len(text) > 100:
+                        chapter_info.content = text
+                        if metadata.get("title"):
+                            chapter_info.title = metadata["title"]
+                        chapter_info.fetched_at = datetime.now()
+                        if not chapter_info.word_count and text:
+                            chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", text))
+                            chapter_info.word_count = chinese_chars
+                        logger.info("浏览器渲染获取VIP章节成功: %d 字", chapter_info.word_count)
+                        return chapter_info
+            except Exception as e:
+                logger.warning("VIP 节浏览器渲染失败: %s", e)
+
+            logger.info("VIP 章节无法获取: %s (chapter_id=%d)",
+                        chapter_info.title, chapter_info.chapter_id)
+            return chapter_info
+
+        # ── 免费章节：curl_cffi 直连 ──
         resp = self._curl_get(session, url)
 
         if resp["status_code"] != 200:
@@ -1181,7 +1239,6 @@ class QidianEngine(BaseEngine):
 
             # 降级路径2: CloakBrowser
             try:
-                import cloakbrowser
                 browser_html = _run_async(self._fetch_chapter_via_browser(url))
                 if browser_html:
                     text, metadata = self._extract_full(browser_html)
@@ -1425,6 +1482,107 @@ class QidianEngine(BaseEngine):
             except Exception:
                 pass
             self._curl_session = None
+
+    # ── w_tsfp Token 刷新 ────────────────────────────────────────────
+
+    def _refresh_w_tsfp_token(self, url: str) -> str | None:
+        """
+        刷新 w_tsfp Cookie 值（基于 novel-downloader 的 _build_payload_token）。
+        需要在每次 www.qidian.com/chapter/ 请求前调用。
+        """
+        import base64, hashlib, json, time
+
+        try:
+            # 从 CookieJarStore 读取现有的 w_tsfp 以提取 fingerprint
+            stored = self._cookie_store.load() if self._cookie_store.exists else None
+            w_tsfp = ""
+            fp_val = ""
+            ab_val = "0" * 32
+            s_init = None
+
+            rc4_key = base64.b64decode("dGcwOUl0Myo5aA==")
+
+            if stored:
+                for c in stored:
+                    if c.get("name") == "w_tsfp":
+                        w_tsfp = c.get("value", "")
+                        break
+
+            if w_tsfp:
+                # RC4 解密现有 token 提取 fingerprint
+                cipher = base64.b64decode(w_tsfp)
+
+                def rc4_init(key):
+                    s = list(range(256))
+                    j = 0
+                    for i in range(256):
+                        j = (j + s[i] + key[i % len(key)]) % 256
+                        s[i], s[j] = s[j], s[i]
+                    return s
+
+                def rc4_stream(s, data):
+                    i = j = 0
+                    out = []
+                    for byte in data:
+                        i = (i + 1) % 256
+                        j = (j + s[i]) % 256
+                        s[i], s[j] = s[j], s[i]
+                        k = s[(s[i] + s[j]) % 256]
+                        out.append(byte ^ k)
+                    return bytes(out)
+
+                s_init = rc4_init(rc4_key)
+                plain = rc4_stream(s_init[:], cipher)
+                payload = json.loads(plain.decode())
+                fp_val = payload.get("fingerprint", "")
+                ab_val = payload.get("abnormal", "0" * 32)
+            else:
+                fp_val = hashlib.md5(str(random.random()).encode()).hexdigest()
+
+            # 生成新 token
+            loadts = int(time.time() * 1000)
+            duration = max(300, min(1000, int(random.normalvariate(600, 150))))
+            timestamp = loadts + duration
+            comb = f"{url}{loadts}{fp_val}"
+            ck_val = hashlib.md5(comb.encode()).hexdigest()
+
+            new_payload = {
+                "loadts": loadts,
+                "timestamp": timestamp,
+                "fingerprint": fp_val,
+                "abnormal": ab_val,
+                "checksum": ck_val,
+            }
+            plain_bytes = json.dumps(new_payload, separators=(",", ":")).encode()
+            if not s_init:
+                s_init = self._rc4_init(rc4_key)
+            cipher_bytes = self._rc4_stream(s_init[:], plain_bytes)
+            return base64.b64encode(cipher_bytes).decode()
+
+        except Exception as e:
+            logger.warning("w_tsfp 刷新失败: %s", e)
+            return None
+
+    @staticmethod
+    def _rc4_init(key: bytes) -> list[int]:
+        s = list(range(256))
+        j = 0
+        for i in range(256):
+            j = (j + s[i] + key[i % len(key)]) % 256
+            s[i], s[j] = s[j], s[i]
+        return s
+
+    @staticmethod
+    def _rc4_stream(s: list[int], data: bytes) -> bytes:
+        i = j = 0
+        out = []
+        for byte in data:
+            i = (i + 1) % 256
+            j = (j + s[i]) % 256
+            s[i], s[j] = s[j], s[i]
+            k = s[(s[i] + s[j]) % 256]
+            out.append(byte ^ k)
+        return bytes(out)
 
     def close_sync(self) -> None:
         """同步方式清理资源。"""
